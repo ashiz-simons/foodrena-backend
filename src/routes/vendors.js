@@ -1,21 +1,41 @@
 const express = require('express');
 const router = express.Router();
-const auth = require('../middleware/auth');
+
 const vendorController = require('../controllers/vendorController');
+const vendorBankController = require('../controllers/vendorBankController');
+const protectVendor = require('../middleware/protectVendor');
 
-// Create vendor profile
-router.post('/', auth, vendorController.createVendor);
+// ================= PUBLIC =================
+router.get('/', vendorController.getVendors);
+router.get('/:id/menu', vendorController.getVendorMenuPublic);
 
-// Get my vendor profile
-router.get('/me', auth, vendorController.getMyVendor);
+// ================= DASHBOARD =================
+router.get(
+  '/dashboard',
+  protectVendor,
+  vendorController.getDashboard
+);
 
-// Update my vendor profile
-router.put('/me', auth, vendorController.updateVendor);
+// ================= PROFILE =================
+router.post('/', protectVendor, vendorController.createVendor);
+router.get('/me', protectVendor, vendorController.getMyVendor);
+router.put('/me', protectVendor, vendorController.updateVendor);
 
-// Get my menu
-router.get('/menu', auth, vendorController.getMyMenu);
+// ================= BANK =================
+router.get(
+  '/me/bank',
+  protectVendor,
+  vendorBankController.getBank
+);
 
-// Add menu item
-router.post('/menu', auth, vendorController.addMenuItem);
+router.post(
+  '/me/bank',
+  protectVendor,
+  vendorBankController.addOrUpdateBank
+);
+
+// ================= MENU =================
+router.get('/menu', protectVendor, vendorController.getMyMenu);
+router.post('/menu', protectVendor, vendorController.addMenuItem);
 
 module.exports = router;

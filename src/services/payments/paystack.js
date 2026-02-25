@@ -1,39 +1,56 @@
-const axios = require('axios');
+const axios = require("axios");
+
+const PAYSTACK_BASE_URL = "https://api.paystack.co";
 
 const paystack = axios.create({
-  baseURL: 'https://api.paystack.co',
+  baseURL: PAYSTACK_BASE_URL,
   headers: {
-    Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
-    'Content-Type': 'application/json'
-  }
+    Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+    "Content-Type": "application/json",
+  },
+  timeout: 15000,
 });
 
-exports.initializeTransaction = async ({ email, amount, reference, callback_url }) => {
-  const res = await paystack.post('/transaction/initialize', {
-    email,
-    amount,
-    reference,
-    callback_url
-  });
-  return res.data;
+/**
+ * ============================
+ * INIT TRANSACTION
+ * ============================
+ */
+exports.initializeTransaction = async ({
+  email,
+  amount,
+  reference,
+  callback_url,
+}) => {
+  try {
+    const response = await paystack.post("/transaction/initialize", {
+      email,
+      amount,
+      reference,
+      callback_url,
+    });
+
+    return response.data;
+  } catch (err) {
+    console.error("❌ PAYSTACK INIT ERROR:", err.response?.data || err.message);
+    throw err;
+  }
 };
 
+/**
+ * ============================
+ * VERIFY TRANSACTION
+ * ============================
+ */
 exports.verifyTransaction = async (reference) => {
-  const res = await paystack.get(`/transaction/verify/${reference}`);
-  return res.data;
-};
+  try {
+    const response = await paystack.get(
+      `/transaction/verify/${reference}`
+    );
 
-exports.refundTransaction = async (reference) => {
-  const res = await paystack.post('/refund', { reference });
-  return res.data;
-};
-
-exports.initiateTransfer = async ({ amount, recipient, reference }) => {
-  const res = await paystack.post('/transfer', {
-    source: 'balance',
-    amount: Math.round(amount * 100),
-    recipient,
-    reference
-  });
-  return res.data;
+    return response.data;
+  } catch (err) {
+    console.error("❌ PAYSTACK VERIFY ERROR:", err.response?.data || err.message);
+    throw err;
+  }
 };

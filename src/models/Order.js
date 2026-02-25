@@ -1,21 +1,15 @@
 const mongoose = require('mongoose');
 
 const OrderItemSchema = new mongoose.Schema({
-  menuItemId: {
-    type: mongoose.Schema.Types.ObjectId,
-    required: true,
-  },
+  menuItemId: mongoose.Schema.Types.ObjectId,
   name: String,
-  price: Number,
-  quantity: {
-    type: Number,
-    default: 1,
-    min: 1,
-  },
+  price: { type: Number, default: 0 },
+  quantity: { type: Number, default: 1, min: 1 },
 });
 
 const OrderSchema = new mongoose.Schema(
   {
+    // ---------------- CORE ----------------
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -25,42 +19,82 @@ const OrderSchema = new mongoose.Schema(
     vendor: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Vendor',
-      required: true,
+      required: false, // allow null for package deliveries
+    },
+
+    rider: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Rider',
+      default: null,
+    },
+
+    type: {
+      type: String,
+      enum: ['food', 'package'],
+      default: 'food',
     },
 
     items: [OrderItemSchema],
 
-    subtotal: Number,
-    deliveryFee: Number,
-    total: Number,
+    // ---------------- PRICING ----------------
+    subtotal: { type: Number, default: 0 },
+    deliveryFee: { type: Number, default: 0 },
+    total: { type: Number, default: 0 },
 
-    status: {
-      type: String,
-      enum: [
-        'pending',
-        'accepted',
-        'preparing',
-        'dispatched',
-        'delivered',
-        'cancelled',
-      ],
-      default: 'pending',
-    },
+    // Platform accounting
+    platformFee: { type: Number, default: 0 },
+    vendorNetAmount: { type: Number, default: 0 },
+    riderPayout: { type: Number, default: 0 },
 
+    // ---------------- PAYMENT ----------------
     paymentStatus: {
       type: String,
       enum: ['unpaid', 'paid', 'refunded'],
       default: 'unpaid',
     },
 
-    acceptedAt: Date,
-    paidAt: Date,
-    cancelledAt: Date,
-
     paymentProvider: {
       type: String,
       enum: ['stripe', 'paystack'],
-      default: undefined,
+    },
+
+    paidAt: Date,
+
+    // ---------------- DELIVERY FLOW ----------------
+    status: {
+      type: String,
+      enum: [
+        'pending',          // created
+        'accepted',         // vendor accepted
+        'preparing',        // vendor preparing
+        'searching_rider',  
+        'rider_assigned',
+        'arrived_at_pickup',
+        'picked_up',
+        'on_the_way',
+        'delivered',
+        'cancelled',
+      ],
+      default: 'pending',
+    },
+
+    acceptedAt: Date,
+    assignedAt: Date,
+    pickedUpAt: Date,
+    deliveredAt: Date,
+    cancelledAt: Date,
+
+    // ---------------- LOCATIONS ----------------
+    pickupLocation: {
+      address: String,
+      lat: Number,
+      lng: Number,
+    },
+
+    dropoffLocation: {
+      address: String,
+      lat: Number,
+      lng: Number,
     },
 
     deliveryAddress: {
@@ -72,17 +106,27 @@ const OrderSchema = new mongoose.Schema(
       lng: Number,
     },
 
-    refundStatus: {
-  type: String,
-  enum: ['none', 
-    'pending', 
-    'refunded', 
-    'failed'],
-  default: 'none'
-},
-refundedAt: Date,
-refundReason: String,
+    // ---------------- DISTANCE & ETA ----------------
+    distanceKm: Number,
+    estimatedTimeMinutes: Number,
 
+    // ---------------- RIDER MATCHING ----------------
+    assignmentAttempts: { type: Number, default: 0 },
+
+    // ---------------- REFUNDS ----------------
+    refundStatus: {
+      type: String,
+      enum: ['none', 'pending', 'refunded', 'failed'],
+      default: 'none',
+    },
+
+    refundedAt: Date,
+    refundReason: String,
+
+    // ---------------- ACCOUNTING SAFETY FLAGS ----------------
+    vendorEarningRecorded: { type: Boolean, default: false },
+    riderPaid: { type: Boolean, default: false },
+    platformProfitRecorded: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

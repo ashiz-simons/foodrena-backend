@@ -2,33 +2,17 @@ const mongoose = require('mongoose');
 
 const EarningSchema = new mongoose.Schema(
   {
-    order: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Order',
-      required: true,
-      unique: true
-    },
+    order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', unique: true },
 
-    vendor: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Vendor',
-      required: true
-    },
+    vendor: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', required: true },
 
-    grossAmount: {
-      type: Number,
-      required: true
-    },
+    grossAmount: Number,     // order subtotal
+    platformFee: Number,     // commission
+    netAmount: Number,       // vendor payout
 
-    platformFee: {
-      type: Number,
-      required: true
-    },
-
-    netAmount: {
-      type: Number,
-      required: true
-    },
+    // ✅ NEW — Profit analytics
+    deliveryFee: Number,
+    platformProfit: Number,
 
     status: {
       type: String,
@@ -37,7 +21,9 @@ const EarningSchema = new mongoose.Schema(
     },
 
     availableAt: Date,
-    paidAt: Date
+    paidAt: Date,
+    refundedAt: Date,
+
   },
   { timestamps: true }
 );

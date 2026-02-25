@@ -1,10 +1,15 @@
-const express = require("express");
-const router = express.Router();
+const router = require("express").Router();
+const {
+  getAllOrders,
+  cancelOrder,
+  forceCompleteOrder,
+} = require("../controllers/adminOrdersController");
 const protectAdmin = require("../middleware/protectAdmin");
-const controller = require("../controllers/adminOrders.controller");
 
-router.get("/", protectAdmin, controller.getAllOrders);
-router.patch("/:id/cancel", protectAdmin, controller.cancelOrder);
-router.patch("/:id/force-complete", protectAdmin, controller.forceCompleteOrder);
+router.use(protectAdmin);
+
+router.get("/", getAllOrders);
+router.patch("/:id/cancel", cancelOrder);
+router.patch("/:id/force-complete", forceCompleteOrder);
 
 module.exports = router;

@@ -52,6 +52,12 @@ const VendorSchema = new mongoose.Schema(
       country: String,
     },
 
+    bank: {
+      bankName: String,
+      accountNumber: String,
+      accountName: String,
+    },
+
     location: {
       type: {
         type: String,

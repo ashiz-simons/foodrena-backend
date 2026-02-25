@@ -1,10 +1,10 @@
 const User = require("../models/User");
+const Rider = require("../models/Rider");
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { signToken } = require("../utils/jwt");
 const { sendEmail } = require("../services/notifications/email");
-const { sendOTPEmail } = require("../utils/sendOTP");
 
 /* =========================
    REGISTER
@@ -25,7 +25,7 @@ exports.register = async (req, res) => {
     password,
     role,
     emailVerificationToken: verifyToken,
-    emailVerificationExpires: Date.now() + 60 * 60 * 1000, // 1 hour
+    emailVerificationExpires: Date.now() + 60 * 60 * 1000,
   });
 
   try {
@@ -40,10 +40,22 @@ exports.register = async (req, res) => {
     console.error("Verification email failed:", err.message);
   }
 
-  // ❌ DO NOT issue token for admin
+  // ❌ No token for admin
   let token = null;
   if (user.role !== "admin") {
     token = signToken({ id: user._id, role: user.role });
+  }
+
+  // ✅ AUTO-CREATE RIDER PROFILE IF REGISTERING AS RIDER
+  let rider = null;
+  if (user.role === "rider") {
+    rider = await Rider.create({
+      user: user._id,
+      isAvailable: false,
+      isActive: true,
+      currentLocation: { lat: 0, lng: 0 },
+      lastActiveAt: new Date(),
+    });
   }
 
   res.status(201).json({
@@ -53,12 +65,14 @@ exports.register = async (req, res) => {
       email: user.email,
       role: user.role,
     },
+    rider,
     token,
   });
 };
 
+
 /* =========================
-   USER / VENDOR LOGIN
+   USER / VENDOR / RIDER LOGIN
 ========================= */
 exports.login = async (req, res) => {
   const { email, password } = req.body;
@@ -74,6 +88,28 @@ exports.login = async (req, res) => {
   }
 
   const token = signToken({ id: user._id, role: user.role });
+  
+  console.log("🧪 JWT_SECRET (sign):", process.env.JWT_SECRET);
+  console.log("🧪 TOKEN ISSUED:", token);
+  // ================= RIDER AUTO-SYNC =================
+  let rider = null;
+
+  if (user.role === "rider") {
+    rider = await Rider.findOne({ user: user._id });
+
+    // AUTO-CREATE IF MISSING (CRITICAL FIX)
+    if (!rider) {
+      rider = await Rider.create({
+        user: user._id,
+        isAvailable: false,
+        isActive: true,
+        currentLocation: { lat: 0, lng: 0 },
+        lastActiveAt: new Date(),
+      });
+
+      console.log("🆕 Auto-created rider profile:", rider._id);
+    }
+  }
 
   res.json({
     user: {
@@ -82,9 +118,22 @@ exports.login = async (req, res) => {
       email: user.email,
       role: user.role,
     },
+
+    // Return rider profile if exists
+    rider: rider
+      ? {
+          id: rider._id,
+          isAvailable: rider.isAvailable,
+          isActive: rider.isActive,
+          vehicleType: rider.vehicleType || null,
+          currentLocation: rider.currentLocation,
+        }
+      : null,
+
     token,
   });
 };
+
 
 /* =========================
    ADMIN LOGIN (STEP 1)
@@ -106,7 +155,7 @@ exports.adminLogin = async (req, res) => {
     return res.status(401).json({ message: "Invalid credentials" });
   }
 
-  // 🔐 Enforce OTP
+  // 🔐 OTP REQUIRED
   if (admin.twoFactorEnabled) {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -129,7 +178,7 @@ exports.adminLogin = async (req, res) => {
     });
   }
 
-  // (Fallback — if OTP disabled)
+  // Fallback if OTP disabled
   const token = signToken({ id: admin._id, role: admin.role });
 
   res.json({

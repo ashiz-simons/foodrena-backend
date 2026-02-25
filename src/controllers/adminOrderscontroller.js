@@ -1,6 +1,9 @@
 const Order = require("../models/Order");
-const VendorWallet = require("../models/VendorWallet");
+const VendorWallet = require("../models/Wallet");
 
+/**
+ * GET all orders (admin)
+ */
 exports.getAllOrders = async (req, res) => {
   const orders = await Order.find()
     .populate("user", "name email")
@@ -10,7 +13,9 @@ exports.getAllOrders = async (req, res) => {
   res.json(orders);
 };
 
-/* ❌ Cancel order */
+/**
+ * ❌ Cancel order (ADMIN)
+ */
 exports.cancelOrder = async (req, res) => {
   const order = await Order.findById(req.params.id);
 
@@ -23,7 +28,6 @@ exports.cancelOrder = async (req, res) => {
   }
 
   order.status = "cancelled";
-  order.cancelledBy = "admin";
   order.cancelledAt = new Date();
 
   await order.save();
@@ -31,7 +35,9 @@ exports.cancelOrder = async (req, res) => {
   res.json({ message: "Order cancelled" });
 };
 
-/* ✅ Force complete (release earnings) */
+/**
+ * ✅ Force complete order (ADMIN)
+ */
 exports.forceCompleteOrder = async (req, res) => {
   const order = await Order.findById(req.params.id);
 
@@ -44,21 +50,23 @@ exports.forceCompleteOrder = async (req, res) => {
   }
 
   order.status = "completed";
+  order.paymentStatus = "paid";
   order.completedAt = new Date();
-  order.completedBy = "admin";
 
   await order.save();
 
-  /* 🔓 Unlock vendor earnings */
-  await VendorWallet.updateOne(
-    { vendor: order.vendor },
-    {
-      $inc: {
-        balance: order.vendorEarning,
-        availableBalance: order.vendorEarning,
-      },
-    }
-  );
+  // Optional: credit vendor wallet if you use it
+  if (order.vendorEarning) {
+    await VendorWallet.updateOne(
+      { vendor: order.vendor },
+      {
+        $inc: {
+          balance: order.vendorEarning,
+          availableBalance: order.vendorEarning,
+        },
+      }
+    );
+  }
 
   res.json({ message: "Order force completed" });
 };

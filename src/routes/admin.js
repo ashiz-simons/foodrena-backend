@@ -8,9 +8,10 @@ router.get('/orders', auth, allow('admin'), adminController.getAllOrders);
 router.get('/withdrawals', auth, allow('admin'), adminController.getAllWithdrawals);
 router.get('/revenue', auth, allow('admin'), adminController.getPlatformRevenue);
 
-// 🔴 THIS IS WHAT YOU ARE MISSING
+// ✅ Vendors
 router.get('/vendors', auth, allow('admin'), adminController.getAllVendors);
 router.patch('/vendors/:id/verify', auth, allow('admin'), adminController.verifyVendor);
 router.patch('/vendors/:id/suspend', auth, allow('admin'), adminController.suspendVendor);
+router.patch('/vendors/:id/reinstate', auth, allow('admin'), adminController.reinstateVendor);
 
 module.exports = router;

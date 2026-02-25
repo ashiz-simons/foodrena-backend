@@ -5,14 +5,28 @@ const redis = require('../services/redis');
 const { refundTransaction } = require('../services/payments/paystack');
 const Earning = require('../models/Earning');
 const Wallet = require('../models/Wallet');
+const finalizeOrderSettlement = require("../services/finalizeOrderSettlement");
+
+/**
+ * =======================
+ * SAFE FINALIZE WRAPPER
+ * =======================
+ */
+async function safeFinalizeSettlement(orderId) {
+  try {
+    await finalizeOrderSettlement(orderId);
+  } catch (err) {
+    console.error("Finalize settlement failed:", err.message);
+  }
+}
 
 /**
  * =======================
  * TIMEOUTS
  * =======================
  */
-const ORDER_EXPIRY_MS = 30 * 60 * 1000;           // 30 mins payment window
-const VENDOR_ACCEPT_TIMEOUT_MS = 10 * 60 * 1000; // 10 mins vendor accept
+const ORDER_EXPIRY_MS = 30 * 60 * 1000;
+const VENDOR_ACCEPT_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * =======================
@@ -21,9 +35,10 @@ const VENDOR_ACCEPT_TIMEOUT_MS = 10 * 60 * 1000; // 10 mins vendor accept
  */
 const ALLOWED_TRANSITIONS = {
   pending: ['accepted', 'cancelled'],
-  accepted: ['preparing'],
+  accepted: ['preparing', 'cancelled'],
   preparing: ['dispatched'],
-  dispatched: ['delivered']
+  dispatched: ['delivered'],
+  searching_rider: ['accepted', 'cancelled'],
 };
 
 /**
@@ -35,24 +50,24 @@ async function publish(event, payload) {
   if (!redis) return;
   try {
     await redis.publish(event, JSON.stringify(payload));
-  } catch (_) {}
+  } catch (err) {
+    console.warn('Redis publish failed:', err.message);
+  }
 }
 
 /**
  * =======================
- * REFUND HELPER (IDEMPOTENT)
+ * REFUND HELPER (SAFE + IDEMPOTENT)
  * =======================
  */
 async function refundOrderIfNeeded(order, reason) {
   if (
-    order.paymentStatus !== 'paid' ||
-    order.refundStatus === 'refunded' ||
-    order.paymentProvider !== 'paystack'
-  ) {
-    return;
-  }
+    order.paymentStatus !== "paid" ||
+    order.refundStatus === "refunded" ||
+    order.refundStatus === "pending"
+  ) return;
 
-  order.refundStatus = 'pending';
+  order.refundStatus = "pending";
   order.refundReason = reason;
   await order.save();
 
@@ -60,8 +75,9 @@ async function refundOrderIfNeeded(order, reason) {
     await refundTransaction(order.reference);
 
     const earning = await Earning.findOne({ order: order._id });
-    if (earning && earning.status !== 'reversed') {
-      earning.status = 'reversed';
+
+    if (earning && earning.status !== "reversed") {
+      earning.status = "reversed";
       await earning.save();
 
       const wallet = await Wallet.findOne({ vendor: order.vendor });
@@ -74,11 +90,16 @@ async function refundOrderIfNeeded(order, reason) {
       }
     }
 
-    order.refundStatus = 'refunded';
+    order.vendorEarningRecorded = true;
+    order.riderPaid = true;
+    order.platformProfitRecorded = true;
+
+    order.refundStatus = "refunded";
     order.refundedAt = new Date();
     await order.save();
-  } catch (err) {
-    order.refundStatus = 'failed';
+
+  } catch {
+    order.refundStatus = "failed";
     await order.save();
   }
 }
@@ -97,10 +118,7 @@ function withExpiry(order) {
     paymentExpiresAt: new Date(createdAt + ORDER_EXPIRY_MS),
     vendorAcceptExpiresAt: new Date(createdAt + VENDOR_ACCEPT_TIMEOUT_MS),
     paymentExpiresInMs: Math.max(createdAt + ORDER_EXPIRY_MS - now, 0),
-    vendorAcceptExpiresInMs: Math.max(
-      createdAt + VENDOR_ACCEPT_TIMEOUT_MS - now,
-      0
-    )
+    vendorAcceptExpiresInMs: Math.max(createdAt + VENDOR_ACCEPT_TIMEOUT_MS - now, 0)
   };
 }
 
@@ -147,68 +165,73 @@ async function expireIfVendorLate(order) {
 
 /**
  * =======================
- * CREATE ORDER (USER)
+ * CREATE ORDER
  * =======================
  */
 exports.createOrder = async (req, res) => {
-  const userId = req.user._id;
-  const { vendorId, items, deliveryAddress } = req.body;
+  try {
+    const userId = req.user._id;
+    const { vendorId, items, deliveryAddress } = req.body;
 
-  if (!items || !items.length) {
-    return res.status(400).json({ message: 'Order items required' });
-  }
-
-  const vendor = await Vendor.findById(vendorId);
-  if (!vendor || vendor.status !== 'verified') {
-    return res.status(400).json({ message: 'Vendor unavailable' });
-  }
-
-  let subtotal = 0;
-  const orderItems = [];
-
-  for (const item of items) {
-    const menuItem = vendor.menuItems.id(item.menuItemId);
-    if (!menuItem || !menuItem.available) {
-      return res.status(400).json({ message: 'Invalid menu item' });
+    if (!items || !items.length) {
+      return res.status(400).json({ message: 'Order items required' });
     }
 
-    const quantity = item.quantity || 1;
-    subtotal += menuItem.price * quantity;
+    const vendor = await Vendor.findById(vendorId);
+    if (!vendor || vendor.status !== 'verified') {
+      return res.status(400).json({ message: 'Vendor unavailable' });
+    }
 
-    orderItems.push({
-      menuItemId: menuItem._id,
-      name: menuItem.name,
-      price: menuItem.price,
-      quantity
+    let subtotal = 0;
+    const orderItems = [];
+
+    for (const item of items) {
+      const menuItem = vendor.menuItems.id(item.menuItemId);
+      if (!menuItem || !menuItem.available) {
+        return res.status(400).json({ message: 'Invalid menu item' });
+      }
+
+      const quantity = Math.max(1, item.quantity || 1);
+      subtotal += menuItem.price * quantity;
+
+      orderItems.push({
+        menuItemId: menuItem._id,
+        name: menuItem.name,
+        price: menuItem.price,
+        quantity
+      });
+    }
+
+    const deliveryFee = 500;
+    const total = subtotal + deliveryFee;
+
+    const order = await Order.create({
+      user: userId,
+      vendor: vendorId,
+      items: orderItems,
+      subtotal,
+      deliveryFee,
+      total,
+      deliveryAddress,
+      status: 'pending'
     });
+
+    await publish('order.created', {
+      orderId: order._id,
+      vendorId,
+      userId,
+      total,
+      status: order.status
+    });
+
+    return res.status(201).json({
+      message: 'Order created',
+      order: withExpiry(order)
+    });
+  } catch (err) {
+    console.error('Create Order Error:', err);
+    res.status(500).json({ message: 'Server error' });
   }
-
-  const deliveryFee = 500;
-  const total = subtotal + deliveryFee;
-
-  const order = await Order.create({
-    user: userId,
-    vendor: vendorId,
-    items: orderItems,
-    subtotal,
-    deliveryFee,
-    total,
-    deliveryAddress,
-    status: 'pending'
-  });
-
-  await publish('order.created', {
-    orderId: order._id,
-    vendorId,
-    userId,
-    total,
-    status: order.status
-  });
-
-  res.status(201).json({
-    message: 'Order created',
-    order: withExpiry(order)
-  });
 };
 
 /**
@@ -256,37 +279,87 @@ exports.getVendorOrders = async (req, res) => {
 
 /**
  * =======================
- * UPDATE ORDER STATUS (VENDOR)
+ * UPDATE ORDER STATUS
  * =======================
  */
 exports.updateOrderStatus = async (req, res) => {
-  const { status } = req.body;
-  const order = await Order.findById(req.params.id);
+  try {
+    const { status } = req.body;
+    const order = await Order.findById(req.params.id);
 
-  if (!order) {
-    return res.status(404).json({ message: 'Order not found' });
-  }
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
 
-  // Vendor ownership check
-  if (order.vendor.toString() !== req.user._id.toString()) {
-    return res.status(403).json({ message: 'Access denied' });
-  }
+    if (['cancelled', 'refunded'].includes(order.status)) {
+      return res.status(400).json({ message: 'Order locked' });
+    }
 
-  // 🚨 ONLY enforce payment AFTER acceptance
-  if (
-    ['preparing', 'completed'].includes(status) &&
-    order.paymentStatus !== 'paid'
-  ) {
-    return res.status(400).json({
-      message: 'Payment must be made before continuing'
+    const vendor = await Vendor.findOne({ owner: req.user._id });
+    if (!vendor || order.vendor.toString() !== vendor._id.toString()) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    const allowed = ALLOWED_TRANSITIONS[order.status] || [];
+    if (!allowed.includes(status)) {
+      return res.status(400).json({
+        message: `Invalid transition ${order.status} → ${status}`
+      });
+    }
+
+    if (
+      ['preparing', 'on_the_way', 'delivered'].includes(status) &&
+      order.paymentStatus !== 'paid'
+    ) {
+      return res.status(400).json({
+        message: 'Payment must be completed first'
+      });
+    }
+
+    order.status = status;
+
+    /**
+     * =======================
+     * RELEASE EARNINGS (SAFE)
+     * =======================
+     */
+    if (status === 'delivered') {
+      order.deliveredAt = new Date();
+
+      const earning = await Earning.findOne({ order: order._id });
+
+      if (earning && earning.status === 'pending') {
+        earning.status = 'available';
+        await earning.save();
+
+        const wallet = await Wallet.findOne({ vendor: order.vendor });
+        if (wallet) {
+          wallet.balance += earning.netAmount;
+          wallet.pendingBalance = Math.max(
+            0,
+            wallet.pendingBalance - earning.netAmount
+          );
+          await wallet.save();
+        }
+      }
+
+      await safeFinalizeSettlement(order._id);
+    }
+
+    await order.save();
+
+    await publish('order.status.updated', {
+      orderId: order._id,
+      status
     });
+
+    res.json({
+      message: 'Order status updated',
+      order
+    });
+  } catch (err) {
+    console.error('Update Order Error:', err);
+    res.status(500).json({ message: 'Server error' });
   }
-
-  order.status = status;
-  await order.save();
-
-  res.json({
-    message: 'Order status updated',
-    order
-  });
 };
+

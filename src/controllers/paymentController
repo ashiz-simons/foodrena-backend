@@ -1,155 +1,280 @@
 const crypto = require('crypto');
+
 const Order = require('../models/Order');
 const Earning = require('../models/Earning');
 const Wallet = require('../models/Wallet');
+
 const {
   initializeTransaction,
   verifyTransaction
 } = require('../services/payments/paystack');
 
-const ORDER_EXPIRY_MS = 30 * 60 * 1000;
+const ORDER_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
 
+/**
+ * ============================
+ * HELPERS
+ * ============================
+ */
 function isExpired(order) {
   return (
-    order.status === 'pending' &&
     order.paymentStatus === 'unpaid' &&
     Date.now() - order.createdAt.getTime() > ORDER_EXPIRY_MS
   );
 }
 
+/**
+ * ============================
+ * CREATE EARNING (IDEMPOTENT)
+ * ============================
+ */
 async function createEarning(order) {
-  const existing = await Earning.findOne({ order: order._id });
-  if (existing) return;
+  const exists = await Earning.findOne({ order: order._id });
+  if (exists && exists.status !== 'reversed') {
+    return exists;
+  }
 
-  const platformFee = Math.round(order.subtotal * 0.1);
-  const netAmount = order.subtotal - platformFee;
+  const PLATFORM_RATE = 0.10;
 
-  await Earning.create({
+  const platformFee = Math.round(order.subtotal * PLATFORM_RATE);
+  const vendorNet = order.subtotal - platformFee;
+
+  order.platformFee = platformFee;
+  order.vendorNetAmount = vendorNet;
+  await order.save();
+
+  const earning = await Earning.create({
     order: order._id,
     vendor: order.vendor,
     grossAmount: order.subtotal,
     platformFee,
-    netAmount,
+    netAmount: vendorNet,
+    deliveryFee: order.deliveryFee,
+    platformProfit: platformFee,
     status: 'pending',
     availableAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
   });
+
+  let wallet = await Wallet.findOne({ vendor: order.vendor });
+  if (!wallet) {
+    wallet = await Wallet.create({
+      vendor: order.vendor,
+      balance: 0,
+      pendingBalance: 0
+    });
+  }
+
+  wallet.pendingBalance += vendorNet;
+  await wallet.save();
+
+  return earning;
 }
 
+/**
+ * ============================
+ * INITIATE PAYMENT
+ * ============================
+ */
 exports.initiatePayment = async (req, res) => {
-  const order = await Order.findOne({
-    _id: req.body.orderId,
-    user: req.user._id
-  });
+  try {
+    const order = await Order.findOne({
+      _id: req.body.orderId,
+      user: req.user._id
+    });
 
-  if (!order) return res.status(404).json({ message: 'Order not found' });
-  if (isExpired(order)) return res.status(400).json({ message: 'Order expired' });
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
 
-  const reference = `FR_${order._id}_${Date.now()}`;
+    if (isExpired(order)) {
+      order.status = 'cancelled';
+      await order.save();
+      return res.status(400).json({ message: 'Order expired' });
+    }
 
-  const data = await initializeTransaction({
-    email: req.user.email,
-    amount: Math.round(order.total * 100),
-    reference,
-    callback_url: process.env.PAYSTACK_CALLBACK_URL
-  });
+    if (order.paymentStatus === 'paid') {
+      return res.status(400).json({ message: 'Order already paid' });
+    }
 
-  order.paymentProvider = 'paystack';
-  order.reference = reference;
-  await order.save();
+    const reference = `FR_${order._id}_${Date.now()}`;
 
-  res.json(data.data);
+    const paystackResponse = await initializeTransaction({
+      email: req.user.email,
+      amount: Math.round(order.total * 100),
+      reference,
+    });
+
+    order.paymentProvider = 'paystack';
+    order.reference = reference;
+    await order.save();
+
+    return res.json(paystackResponse.data);
+
+  } catch (err) {
+    console.error(
+      '❌ PAYSTACK INIT ERROR:',
+      err.response?.data || err.message
+    );
+
+    return res.status(502).json({
+      message: 'Payment gateway error',
+      error: err.response?.data || 'Unable to reach Paystack'
+    });
+  }
 };
 
+/**
+ * ============================
+ * VERIFY PAYMENT (CLIENT)
+ * ============================
+ */
 exports.verifyPayment = async (req, res) => {
-  const result = await verifyTransaction(req.params.reference);
-  if (result.data.status !== 'success') {
-    return res.status(400).json({ message: 'Payment failed' });
-  }
+  try {
+    const reference = req.params.reference;
+    const { assignRiderToOrder } = require('../services/riderMatching');
 
-  const orderId = req.params.reference.split('_')[1];
-  const order = await Order.findById(orderId);
-  if (!order || isExpired(order)) {
-    return res.status(400).json({ message: 'Order expired' });
-  }
+    const result = await verifyTransaction(reference);
 
-  if (order.paymentStatus !== 'paid') {
+    if (!result?.data || result.data.status !== 'success') {
+      return res.status(400).json({ message: 'Payment not successful' });
+    }
+
+    const orderId = reference.split('_')[1];
+    const order = await Order.findById(orderId);
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    if (isExpired(order)) {
+      order.status = 'cancelled';
+      await order.save();
+      return res.status(400).json({ message: 'Order expired' });
+    }
+
+    if (order.paymentStatus === 'paid') {
+      return res.json({ message: 'Payment already processed' });
+    }
+
     order.paymentStatus = 'paid';
+    order.status = 'searching_rider';
     order.paidAt = new Date();
     await order.save();
+
     await createEarning(order);
-  }
+    await assignRiderToOrder(order._id);
 
-  res.json({ message: 'Payment verified' });
+    return res.json({ message: 'Payment verified successfully' });
+
+  } catch (err) {
+    console.error('❌ PAYSTACK VERIFY ERROR:', err.message);
+    return res.status(500).json({ message: 'Payment verification failed' });
+  }
 };
 
+/**
+ * ============================
+ * PAYSTACK WEBHOOK (CHARGE SUCCESS)
+ * ============================
+ */
 exports.paystackWebhook = async (req, res) => {
-  const hash = crypto
-    .createHmac('sha512', process.env.PAYSTACK_SECRET)
-    .update(req.body)
-    .digest('hex');
+  try {
+    const signature = req.headers['x-paystack-signature'];
 
-  if (hash !== req.headers['x-paystack-signature']) {
-    return res.sendStatus(401);
-  }
+    const hash = crypto
+      .createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
+      .update(JSON.stringify(req.body))
+      .digest('hex');
 
-  const event = JSON.parse(req.body.toString());
-  if (event.event !== 'charge.success') return res.sendStatus(200);
-
-  const orderId = event.data.reference.split('_')[1];
-  const order = await Order.findById(orderId);
-  if (!order || order.paymentStatus === 'paid') return res.sendStatus(200);
-
-  order.paymentStatus = 'paid';
-  order.paidAt = new Date();
-  await order.save();
-  await createEarning(order);
-
-  res.sendStatus(200);
-};
-
-exports.paystackTransferWebhook = async (req, res) => {
-  const crypto = require('crypto');
-
-  const hash = crypto
-    .createHmac('sha512', process.env.PAYSTACK_SECRET)
-    .update(JSON.stringify(req.body))
-    .digest('hex');
-
-  if (hash !== req.headers['x-paystack-signature']) {
-    return res.sendStatus(401);
-  }
-
-  const event = req.body;
-  if (!event.event.startsWith('transfer.')) {
-    return res.sendStatus(200);
-  }
-
-  const Withdrawal = require('../models/Withdrawal');
-  const Wallet = require('../models/Wallet');
-
-  const reference = event.data.reference;
-  const withdrawal = await Withdrawal.findOne({ reference });
-  if (!withdrawal) return res.sendStatus(200);
-
-  if (event.event === 'transfer.success') {
-    withdrawal.status = 'paid';
-    withdrawal.paidAt = new Date();
-    await withdrawal.save();
-  }
-
-  if (event.event === 'transfer.failed') {
-    withdrawal.status = 'failed';
-    withdrawal.failureReason =
-      event.data.reason || 'Transfer failed';
-    await withdrawal.save();
-
-    const wallet = await Wallet.findById(withdrawal.wallet);
-    if (wallet) {
-      wallet.balance += withdrawal.amount;
-      await wallet.save();
+    if (hash !== signature) {
+      return res.sendStatus(401);
     }
-  }
 
-  res.sendStatus(200);
+    const event = req.body;
+    if (event.event !== 'charge.success') {
+      return res.sendStatus(200);
+    }
+
+    const reference = event.data.reference;
+    const orderId = reference.split('_')[1];
+
+    const order = await Order.findById(orderId);
+    if (!order || order.paymentStatus === 'paid') {
+      return res.sendStatus(200);
+    }
+
+    const { assignRiderToOrder } = require('../services/riderMatching');
+
+    order.paymentStatus = 'paid';
+    order.status = 'searching_rider';
+    order.paidAt = new Date();
+    await order.save();
+
+    await createEarning(order);
+    await assignRiderToOrder(order._id);
+
+    return res.sendStatus(200);
+
+  } catch (err) {
+    console.error('❌ PAYSTACK WEBHOOK ERROR:', err.message);
+    return res.sendStatus(500);
+  }
 };
 
+/**
+ * ============================
+ * PAYSTACK TRANSFER WEBHOOK
+ * ============================
+ */
+exports.paystackTransferWebhook = async (req, res) => {
+  try {
+    const signature = req.headers['x-paystack-signature'];
+
+    const hash = crypto
+      .createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
+      .update(JSON.stringify(req.body))
+      .digest('hex');
+
+    if (hash !== signature) {
+      return res.sendStatus(401);
+    }
+
+    const event = req.body;
+    if (!event.event.startsWith('transfer.')) {
+      return res.sendStatus(200);
+    }
+
+    const Withdrawal = require('../models/Withdrawal');
+
+    const reference = event.data.reference;
+    const withdrawal = await Withdrawal.findOne({ reference });
+    if (!withdrawal || withdrawal.status === 'paid') {
+      return res.sendStatus(200);
+    }
+
+    if (event.event === 'transfer.success') {
+      withdrawal.status = 'paid';
+      withdrawal.paidAt = new Date();
+      await withdrawal.save();
+    }
+
+    if (event.event === 'transfer.failed') {
+      withdrawal.status = 'failed';
+      withdrawal.failureReason = event.data.reason || 'Transfer failed';
+      await withdrawal.save();
+
+      const wallet = await Wallet.findById(withdrawal.wallet);
+      if (wallet) {
+        wallet.pendingBalance = Math.max(0, wallet.pendingBalance - withdrawal.amount);
+        wallet.balance = Math.max(0, wallet.balance - withdrawal.amount);
+        await wallet.save();
+      }
+    }
+
+    return res.sendStatus(200);
+
+  } catch (err) {
+    console.error('❌ PAYSTACK TRANSFER WEBHOOK ERROR:', err.message);
+    return res.sendStatus(500);
+  }
+};

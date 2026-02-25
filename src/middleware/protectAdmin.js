@@ -6,24 +6,29 @@ module.exports = async function protectAdmin(req, res, next) {
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Access denied" });
     }
 
     const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const admin = await User.findById(decoded.id);
-
-    if (!admin || admin.role !== "admin") {
-      return res.status(403).json({ message: "Admin access only" });
+    if (!process.env.JWT_SECRET) {
+      console.error("JWT_SECRET not set");
+      return res.status(500).json({ message: "Server configuration error" });
     }
 
-    // attach admin to request
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    const admin = await User.findById(decoded.id).select("_id name email role");
+
+    if (!admin || admin.role !== "admin") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
     req.admin = admin;
-    req.user = admin; // keep compatibility with earlier code
+    req.user = admin;
 
     next();
   } catch (err) {
-    return res.status(401).json({ message: "Invalid token" });
+    return res.status(401).json({ message: "Invalid or expired token" });
   }
 };

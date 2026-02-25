@@ -2,6 +2,7 @@ const Order = require('../models/Order');
 const Earning = require('../models/Earning');
 const Withdrawal = require('../models/Withdrawal');
 const Vendor = require('../models/Vendor');
+const Wallet = require('../models/Wallet');
 
 /**
  * =======================
@@ -72,9 +73,46 @@ exports.getPlatformRevenue = async (req, res) => {
   */
 exports.getAllVendors = async (req, res) => {
   const vendors = await Vendor.find()
-    .populate('owner', 'name email');
+    .populate('owner', 'name email')
+    .sort('-createdAt');
 
-  res.json(vendors);
+  const enriched = await Promise.all(
+    vendors.map(async (vendor) => {
+      const totalOrders = await Order.countDocuments({ vendor: vendor._id });
+
+      const completedOrders = await Order.countDocuments({
+        vendor: vendor._id,
+        status: 'delivered'
+      });
+
+      const revenueAgg = await Order.aggregate([
+        { $match: { vendor: vendor._id, status: 'delivered' } },
+        { $group: { _id: null, total: { $sum: '$total' } } }
+      ]);
+
+      const revenue = revenueAgg[0]?.total || 0;
+
+      const cancelRate = totalOrders
+        ? (((totalOrders - completedOrders) / totalOrders) * 100).toFixed(1)
+        : 0;
+
+      const wallet = await Wallet.findOne({ vendor: vendor._id });
+
+      return {
+        ...vendor.toObject(),
+        stats: {
+          totalOrders,
+          completedOrders,
+          cancelRate,
+          revenue,
+          walletBalance: wallet?.balance || 0,
+          pendingBalance: wallet?.pendingBalance || 0
+        }
+      };
+    })
+  );
+
+  res.json(enriched);
 };
 
 /**
@@ -113,3 +151,16 @@ exports.suspendVendor = async (req, res) => {
   res.json({ message: "Vendor suspended", vendor });
 };
 
+exports.reinstateVendor = async (req, res) => {
+  const vendor = await Vendor.findById(req.params.id);
+
+  if (!vendor) {
+    return res.status(404).json({ message: "Vendor not found" });
+  }
+
+  vendor.status = "verified";
+  vendor.isOpen = true;
+  await vendor.save();
+
+  res.json({ message: "Vendor reinstated", vendor });
+};

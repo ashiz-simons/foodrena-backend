@@ -1,5 +1,6 @@
 const Vendor = require('../models/Vendor');
 const User = require('../models/User')
+const Order = require('../models/Order');
 /**
  * =======================
  * CREATE VENDOR
@@ -109,4 +110,61 @@ exports.addMenuItem = async (req, res) => {
     message: 'Menu item added',
     menuItems: vendor.menuItems,
   });
+};
+
+exports.getDashboard = async (req, res) => {
+  const vendorId = req.vendor._id;
+
+  const orders = await Order.find({ vendor: vendorId });
+
+  const totalOrders = orders.length;
+  const totalRevenue = orders.reduce(
+    (sum, o) => sum + (o.totalAmount || 0),
+    0
+  );
+
+  res.json({
+    totalOrders,
+    totalRevenue,
+    isOpen: req.vendor.isOpen,
+  });
+};
+
+/**
+ * =======================
+ * GET ALL VENDORS (PUBLIC)
+ * =======================
+ */
+exports.getVendors = async (req, res) => {
+  const vendors = await Vendor.find(
+    { isOpen: true },
+    {
+      businessName: 1,
+      isOpen: 1,
+    }
+  );
+
+  res.json(vendors);
+};
+
+/**
+ * =======================
+ * GET VENDOR MENU (PUBLIC)
+ * =======================
+ */
+exports.getVendorMenuPublic = async (req, res) => {
+  const vendor = await Vendor.findById(req.params.id, {
+    menuItems: 1,
+    businessName: 1,
+    isOpen: 1,
+  });
+
+  if (!vendor) {
+    return res.status(404).json({ message: 'Vendor not found' });
+  }
+
+  // Optional: only return available items
+  const menuItems = vendor.menuItems.filter(i => i.available);
+
+  res.json(menuItems);
 };
