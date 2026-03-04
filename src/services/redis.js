@@ -1,12 +1,5 @@
-// src/services/redis.js
 const Redis = require('ioredis');
 require('dotenv').config();
-
-/**
- * Redis is OPTIONAL but SAFE.
- * This file NEVER exports null.
- * If Redis is down, publish() becomes a no-op.
- */
 
 const REDIS_ENABLED =
   process.env.REDIS_ENABLED === 'true' ||
@@ -25,35 +18,26 @@ if (!REDIS_ENABLED) {
   return;
 }
 
+const REDIS_TLS = process.env.REDIS_TLS === 'true';
+
 const redis = new Redis({
   host: process.env.REDIS_HOST || '127.0.0.1',
   port: Number(process.env.REDIS_PORT) || 6379,
   password: process.env.REDIS_PASSWORD || undefined,
+  // ✅ Upstash requires TLS
+  tls: REDIS_TLS ? {} : undefined,
   lazyConnect: true,
   retryStrategy: (times) => {
-    const delay = Math.min(times * 100, 2000);
-    return delay;
+    if (times > 5) return null; // stop retrying after 5 attempts
+    return Math.min(times * 100, 2000);
   }
 });
 
-// ---- logging ----
-redis.on('connect', () => {
-  console.log('🔴 Redis connected');
-});
+redis.on('connect', () => console.log('🔴 Redis connected'));
+redis.on('ready', () => console.log('✅ Redis ready'));
+redis.on('error', (err) => console.error('❌ Redis error:', err.message));
+redis.on('close', () => console.warn('⚠️ Redis connection closed'));
 
-redis.on('ready', () => {
-  console.log('✅ Redis ready');
-});
-
-redis.on('error', (err) => {
-  console.error('❌ Redis error:', err.message);
-});
-
-redis.on('close', () => {
-  console.warn('⚠️ Redis connection closed');
-});
-
-// ---- safe connect ----
 (async () => {
   try {
     await redis.connect();
