@@ -12,10 +12,13 @@ module.exports = (io, socket) => {
     try {
       if (!riderId) return;
 
-      await Rider.findByIdAndUpdate(riderId, {
-        isAvailable: true,
-        lastSeen: new Date()
-      });
+      await Rider.findOneAndUpdate(
+        { _id: riderId, isActive: true },
+        {
+          isAvailable: true,
+          lastSeen: new Date()
+        }
+      );
 
       socket.join(`rider_${riderId}`);
 
@@ -23,6 +26,11 @@ module.exports = (io, socket) => {
     } catch (err) {
       console.error("❌ rider_online error:", err.message);
     }
+  });
+
+  socket.on("join_order_room", ({ orderId }) => {
+    if (!orderId) return;
+    socket.join(`order_${orderId}`);
   });
 
   /**
@@ -48,7 +56,7 @@ module.exports = (io, socket) => {
       // Find active order assigned to rider
       const activeOrder = await Order.findOne({
         rider: riderId,
-        status: { $in: ["rider_assigned", "picked_up", "on_the_way"] }
+        status: { $in: ["rider_assigned","arrived_at_pickup", "picked_up", "on_the_way"] }
       });
 
       // Emit live update to admin dashboard

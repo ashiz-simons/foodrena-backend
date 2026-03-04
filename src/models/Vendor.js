@@ -1,26 +1,15 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 const MenuItemSchema = new mongoose.Schema(
   {
-    name: {
-      type: String,
-      required: true,
-      trim: true,
-    },
+    name: { type: String, required: true, trim: true },
     description: String,
-    price: {
-      type: Number,
-      required: true,
-      min: 0,
-    },
+    price: { type: Number, required: true, min: 0 },
     image: {
       url: String,
       publicId: String,
     },
-    available: {
-      type: Boolean,
-      default: true,
-    },
+    available: { type: Boolean, default: true },
   },
   { timestamps: true }
 );
@@ -29,21 +18,21 @@ const VendorSchema = new mongoose.Schema(
   {
     owner: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
+      ref: "User",
       unique: true,
     },
 
     businessName: {
       type: String,
-      required: true,
       trim: true,
     },
 
-    phone: {
-      type: String,
-      required: true,
+    logo: {
+      url: String,
+      publicId: String,
     },
+
+    phone: { type: String, required: true },
 
     address: {
       street: String,
@@ -61,16 +50,18 @@ const VendorSchema = new mongoose.Schema(
     location: {
       type: {
         type: String,
-        enum: ['Point'],
-        default: 'Point',
+        enum: ["Point"],
+        required: true,
+        default: "Point",
       },
       coordinates: {
         type: [Number], // [lng, lat]
-        index: '2dsphere',
+        required: true,
       },
     },
 
     documents: [
+
       {
         url: String,
         publicId: String,
@@ -79,18 +70,26 @@ const VendorSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ['pending', 'review', 'verified', 'rejected'],
-      default: 'pending',
+      enum: ["pending", "review", "verified", "rejected"],
+      default: "pending",
     },
 
-    isOpen: {
+    zone: {
+      type: String,
+    },
+
+    onboardingCompleted:{
       type: Boolean,
       default: false,
     },
+
+    isOpen: { type: Boolean, default: false },
 
     menuItems: [MenuItemSchema],
   },
   { timestamps: true }
 );
 
-module.exports = mongoose.model('Vendor', VendorSchema);
+VendorSchema.index({ location: "2dsphere" });
+
+module.exports = mongoose.model("Vendor", VendorSchema);

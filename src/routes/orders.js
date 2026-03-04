@@ -12,7 +12,7 @@ const orderController = require('../controllers/orderController');
 router.post(
   '/',
   auth,
-  allow('user'),
+  allow('customer'),
   orderController.createOrder
 );
 
@@ -20,7 +20,7 @@ router.post(
 router.get(
   '/my',
   auth,
-  allow('user'),
+  allow('customer'),
   orderController.getMyOrders
 );
 

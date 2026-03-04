@@ -30,7 +30,7 @@ function isExpired(order) {
  */
 async function createEarning(order) {
   const exists = await Earning.findOne({ order: order._id });
-  if (exists && exists.status !== 'reversed') {
+  if (exists) {
     return exists;
   }
 
@@ -56,6 +56,7 @@ async function createEarning(order) {
   });
 
   let wallet = await Wallet.findOne({ vendor: order.vendor });
+
   if (!wallet) {
     wallet = await Wallet.create({
       vendor: order.vendor,
@@ -69,7 +70,6 @@ async function createEarning(order) {
 
   return earning;
 }
-
 /**
  * ============================
  * INITIATE PAYMENT
@@ -183,7 +183,7 @@ exports.paystackWebhook = async (req, res) => {
 
     const hash = crypto
       .createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
-      .update(JSON.stringify(req.body))
+      .update(req.body)
       .digest('hex');
 
     if (hash !== signature) {
@@ -265,8 +265,9 @@ exports.paystackTransferWebhook = async (req, res) => {
 
       const wallet = await Wallet.findById(withdrawal.wallet);
       if (wallet) {
-        wallet.pendingBalance = Math.max(0, wallet.pendingBalance - withdrawal.amount);
-        wallet.balance = Math.max(0, wallet.balance - withdrawal.amount);
+        // ✅ CORRECT REVERSAL
+        wallet.pendingBalance -= withdrawal.amount;
+        wallet.balance += withdrawal.amount;
         await wallet.save();
       }
     }

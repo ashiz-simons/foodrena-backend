@@ -25,6 +25,7 @@ const adminRoutes = require('./routes/admin');
 const adminSettingsRoutes = require("./routes/adminSettings.routes");
 const unlockRiderEarnings = require("./jobs/unlockRiderEarnings");
 const riderTrackingSocket = require("./sockets/riderTracking");
+const uploadRoutes = require('./routes/upload');
 
 setInterval(unlockRiderEarnings, 5 * 60 * 1000);
 
@@ -72,6 +73,7 @@ app.use('/api/riders', require('./routes/riderRoutes'));
 app.use("/api/admin/rider-withdrawals", require("./routes/adminRiderWithdrawals.routes"));
 app.use('/api/vendor-wallet', require('./routes/vendorWallet'));
 app.use('/api/users', require('./routes/users'));
+app.use('/api/upload', uploadRoutes);
 /**
  * =======================
  * HEALTH

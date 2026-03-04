@@ -1,166 +1,148 @@
-const Order = require('../models/Order');
-const Earning = require('../models/Earning');
-const Withdrawal = require('../models/Withdrawal');
-const Vendor = require('../models/Vendor');
-const Wallet = require('../models/Wallet');
+const Order = require("../models/Order");
+const Earning = require("../models/Earning");
+const Wallet = require("../models/Wallet");
+const Vendor = require("../models/Vendor");
+const Withdrawal = require("../models/Withdrawal");
 
 /**
- * =======================
+ * ===============================
  * ORDERS
- * =======================
+ * ===============================
+ */
+
+/**
+ * GET all orders (admin)
  */
 exports.getAllOrders = async (req, res) => {
-  const orders = await Order.find()
-    .populate('user', 'name email')
-    .populate('vendor', 'businessName')
-    .sort('-createdAt');
+  try {
+    const orders = await Order.find()
+      .populate("user", "name email")
+      .populate("vendor", "businessName")
+      .sort("-createdAt");
 
-  res.json(orders);
-};
-
-/**
- * =======================
- * EARNINGS
- * =======================
- */
-exports.getAllEarnings = async (req, res) => {
-  const earnings = await Earning.find()
-    .populate('vendor', 'businessName')
-    .populate('order')
-    .sort('-createdAt');
-
-  res.json(earnings);
-};
-
-/**
- * =======================
- * WITHDRAWALS
- * =======================
- */
-exports.getAllWithdrawals = async (req, res) => {
-  const withdrawals = await Withdrawal.find()
-    .populate('vendor', 'businessName')
-    .sort('-createdAt');
-
-  res.json(withdrawals);
-};
-
-/**
- * =======================
- * PLATFORM REVENUE
- * =======================
- */
-exports.getPlatformRevenue = async (req, res) => {
-  const earnings = await Earning.find({
-    status: { $ne: 'reversed' }
-  });
-
-  const revenue = earnings.reduce(
-    (sum, e) => sum + e.platformFee,
-    0
-  );
-
-  res.json({
-    totalRevenue: revenue,
-    currency: 'NGN'
-  });
-};
-
-/**
-  * =======================
-  * GET ALL VENDORS ✅   
-  * =======================
-  */
-exports.getAllVendors = async (req, res) => {
-  const vendors = await Vendor.find()
-    .populate('owner', 'name email')
-    .sort('-createdAt');
-
-  const enriched = await Promise.all(
-    vendors.map(async (vendor) => {
-      const totalOrders = await Order.countDocuments({ vendor: vendor._id });
-
-      const completedOrders = await Order.countDocuments({
-        vendor: vendor._id,
-        status: 'delivered'
-      });
-
-      const revenueAgg = await Order.aggregate([
-        { $match: { vendor: vendor._id, status: 'delivered' } },
-        { $group: { _id: null, total: { $sum: '$total' } } }
-      ]);
-
-      const revenue = revenueAgg[0]?.total || 0;
-
-      const cancelRate = totalOrders
-        ? (((totalOrders - completedOrders) / totalOrders) * 100).toFixed(1)
-        : 0;
-
-      const wallet = await Wallet.findOne({ vendor: vendor._id });
-
-      return {
-        ...vendor.toObject(),
-        stats: {
-          totalOrders,
-          completedOrders,
-          cancelRate,
-          revenue,
-          walletBalance: wallet?.balance || 0,
-          pendingBalance: wallet?.pendingBalance || 0
-        }
-      };
-    })
-  );
-
-  res.json(enriched);
-};
-
-/**
- * =======================
- * VERIFY VENDOR ✅
- * =======================
- */
-exports.verifyVendor = async (req, res) => {
-  const vendor = await Vendor.findById(req.params.id);
-
-  if (!vendor) {
-    return res.status(404).json({ message: 'Vendor not found' });
+    res.json(orders);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch orders" });
   }
-
-  vendor.status = 'verified';
-  vendor.isOpen = true;
-  await vendor.save();
-
-  res.json({
-    message: 'Vendor verified successfully',
-    vendor
-  });
 };
+
+/**
+ * ===============================
+ * WITHDRAWALS
+ * ===============================
+ */
+
+exports.getAllWithdrawals = async (req, res) => {
+  try {
+    const withdrawals = await Withdrawal.find()
+      .populate("vendor", "businessName email")
+      .sort("-createdAt");
+
+    res.json(withdrawals);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch withdrawals" });
+  }
+};
+
+/**
+ * ===============================
+ * PLATFORM REVENUE
+ * ===============================
+ */
+
+exports.getPlatformRevenue = async (req, res) => {
+  try {
+    const earnings = await Earning.find({});
+
+    const totalPlatformProfit = earnings.reduce(
+      (acc, item) => acc + (item.platformProfit || 0),
+      0
+    );
+
+    const totalGross = earnings.reduce(
+      (acc, item) => acc + (item.grossAmount || 0),
+      0
+    );
+
+    res.json({
+      totalPlatformProfit,
+      totalGross,
+      totalOrders: earnings.length
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to calculate revenue" });
+  }
+};
+
+/**
+ * ===============================
+ * VENDORS
+ * ===============================
+ */
+
+exports.getAllVendors = async (req, res) => {
+  try {
+    const vendors = await Vendor.find().sort("-createdAt");
+    res.json(vendors);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch vendors" });
+  }
+};
+
+exports.verifyVendor = async (req, res) => {
+  try {
+    const vendor = await Vendor.findById(req.params.id);
+
+    if (!vendor) {
+      return res.status(404).json({ message: "Vendor not found" });
+    }
+
+    vendor.status = "verified";
+    vendor.isOpen = true; // optional if you want them active immediately
+
+    await vendor.save();
+
+    res.json({
+      message: "Vendor verified successfully",
+      vendor,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to verify vendor" });
+  }
+};
+
 
 exports.suspendVendor = async (req, res) => {
-  const vendor = await Vendor.findById(req.params.id);
+  try {
+    const vendor = await Vendor.findById(req.params.id);
 
-  if (!vendor) {
-    return res.status(404).json({ message: "Vendor not found" });
+    if (!vendor) {
+      return res.status(404).json({ message: "Vendor not found" });
+    }
+
+    vendor.isSuspended = true;
+    await vendor.save();
+
+    res.json({ message: "Vendor suspended" });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to suspend vendor" });
   }
-
-  vendor.status = "suspended";
-  vendor.isOpen = false;
-  await vendor.save();
-
-  res.json({ message: "Vendor suspended", vendor });
 };
 
 exports.reinstateVendor = async (req, res) => {
-  const vendor = await Vendor.findById(req.params.id);
+  try {
+    const vendor = await Vendor.findById(req.params.id);
 
-  if (!vendor) {
-    return res.status(404).json({ message: "Vendor not found" });
+    if (!vendor) {
+      return res.status(404).json({ message: "Vendor not found" });
+    }
+
+    vendor.isSuspended = false;
+    await vendor.save();
+
+    res.json({ message: "Vendor reinstated" });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to reinstate vendor" });
   }
-
-  vendor.status = "verified";
-  vendor.isOpen = true;
-  await vendor.save();
-
-  res.json({ message: "Vendor reinstated", vendor });
 };

@@ -6,14 +6,21 @@ const securityQuestionSchema = new mongoose.Schema({
   answerHash: { type: String, required: true },
 });
 
+
 const userSchema = new mongoose.Schema(
+
   {
-    name: String,
+    name: { type: String, required: true },
 
     email: {
       type: String,
       unique: true,
       lowercase: true,
+      required: true,
+    },
+
+    phone: {
+      type: String,
       required: true,
     },
 
@@ -25,28 +32,29 @@ const userSchema = new mongoose.Schema(
 
     role: {
       type: String,
-      enum: ["user", "customer","rider", "vendor", "admin"],
+      enum: ["customer", "rider", "vendor", "admin"],
       default: "customer",
     },
-    
+
     location: {
       type: {
         type: String,
-        enum: ['Point'],
-        default: 'Point',
+        enum: ["Point"],
+        required: true,
+        default: "Point",
       },
+
       coordinates: {
         type: [Number], // [lng, lat]
-        index: '2dsphere',
+        required: true,
       },
     },
-    
+
     emailVerified: {
       type: Boolean,
       default: false,
     },
 
-    // 🔐 Admin security
     twoFactorEnabled: {
       type: Boolean,
       default: true,
@@ -54,20 +62,19 @@ const userSchema = new mongoose.Schema(
 
     securityQuestions: [securityQuestionSchema],
 
-    // OTP for login / password reset
     otp: {
       codeHash: String,
       expiresAt: Date,
     },
 
-    // Password reset token (issued AFTER OTP + security questions)
     resetToken: String,
     resetTokenExpires: Date,
   },
   { timestamps: true }
 );
 
-/* Hash password */
+userSchema.index({ location: "2dsphere" });
+
 userSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();
   this.password = await bcrypt.hash(this.password, 10);

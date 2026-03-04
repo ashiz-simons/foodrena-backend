@@ -1,5 +1,6 @@
 const User = require("../models/User");
 const Rider = require("../models/Rider");
+const Vendor = require("../models/Vendor");
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -10,65 +11,110 @@ const { sendEmail } = require("../services/notifications/email");
    REGISTER
 ========================= */
 exports.register = async (req, res) => {
-  const { name, email, password, role } = req.body;
-
-  const exists = await User.findOne({ email });
-  if (exists) {
-    return res.status(400).json({ message: "Email already exists" });
-  }
-
-  const verifyToken = crypto.randomBytes(20).toString("hex");
-
-  const user = await User.create({
-    name,
-    email,
-    password,
-    role,
-    emailVerificationToken: verifyToken,
-    emailVerificationExpires: Date.now() + 60 * 60 * 1000,
-  });
-
   try {
-    await sendEmail(
-      user.email,
-      "Verify your account",
-      `<p>Hello ${user.name},</p>
-       <p>Your verification token:</p>
-       <strong>${verifyToken}</strong>`
-    );
-  } catch (err) {
-    console.error("Verification email failed:", err.message);
-  }
+    const { name, email, password, role, phone, location } = req.body;
 
-  // ❌ No token for admin
-  let token = null;
-  if (user.role !== "admin") {
-    token = signToken({ id: user._id, role: user.role });
-  }
+    // ---------------- VALIDATION ----------------
+    if (!name || !email || !password || !phone || !location) {
+      return res.status(400).json({
+        message: "Name, email, password, phone and location are required",
+      });
+    }
 
-  // ✅ AUTO-CREATE RIDER PROFILE IF REGISTERING AS RIDER
-  let rider = null;
-  if (user.role === "rider") {
-    rider = await Rider.create({
-      user: user._id,
-      isAvailable: false,
-      isActive: true,
-      currentLocation: { lat: 0, lng: 0 },
-      lastActiveAt: new Date(),
+    if (
+      !location.type ||
+      location.type !== "Point" ||
+      !Array.isArray(location.coordinates) ||
+      location.coordinates.length !== 2
+    ) {
+      return res.status(400).json({
+        message: "Invalid location format. Must be GeoJSON Point.",
+      });
+    }
+
+    const [lng, lat] = location.coordinates;
+
+    if (
+      typeof lng !== "number" ||
+      typeof lat !== "number"
+    ) {
+      return res.status(400).json({
+        message: "Coordinates must be numbers [lng, lat]",
+      });
+    }
+
+    // ---------------- CHECK EXISTING ----------------
+    const exists = await User.findOne({ email });
+    if (exists) {
+      return res.status(400).json({ message: "Email already exists" });
+    }
+
+    // ---------------- CREATE USER ----------------
+    const user = await User.create({
+      name,
+      email,
+      password,
+      role,
+      phone,
+      location: {
+        type: "Point",
+        coordinates: [lng, lat],
+      },
     });
-  }
 
-  res.status(201).json({
-    user: {
-      id: user._id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-    },
-    rider,
-    token,
-  });
+    let rider = null;
+
+    // ---------------- AUTO-CREATE RIDER PROFILE ----------------
+    if (user.role === "rider") {
+      rider = await Rider.findOne({ user: user._id });
+      if (!rider) {
+        rider = await Rider.create({
+          user: user._id,
+          isAvailable: false,
+          isActive: true,
+          currentLocation: user.location, // use user's geo
+          lastActiveAt: new Date(),
+        });
+      }
+    }
+
+    if (user.role === "vendor") {
+      await Vendor.create({
+        owner: user._id, // 🔥 FIXED (was user:)
+        phone: user.phone, // 🔥 REQUIRED FIELD
+        location: {
+          type: "Point",
+          coordinates: location.coordinates,
+        },
+        status: "pending",
+        isOpen: false,
+      });
+    }
+
+    const token =
+      user.role !== "admin"
+        ? signToken({ id: user._id, role: user.role })
+        : null;
+
+    res.status(201).json({
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        phone: user.phone,
+      },
+      rider,
+      token,
+    });
+  } 
+  
+  catch (error) {
+    console.error("REGISTER ERROR:", error);
+    res.status(500).json({ message: "Registration failed" });
+  }
 };
+
 
 
 /* =========================

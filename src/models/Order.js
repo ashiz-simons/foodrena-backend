@@ -106,6 +106,12 @@ const OrderSchema = new mongoose.Schema(
       lng: Number,
     },
 
+    zone: {
+      type: String,
+      required: true,
+      index: true
+    },
+
     // ---------------- DISTANCE & ETA ----------------
     distanceKm: Number,
     estimatedTimeMinutes: Number,

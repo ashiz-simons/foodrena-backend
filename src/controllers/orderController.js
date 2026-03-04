@@ -36,9 +36,12 @@ const VENDOR_ACCEPT_TIMEOUT_MS = 10 * 60 * 1000;
 const ALLOWED_TRANSITIONS = {
   pending: ['accepted', 'cancelled'],
   accepted: ['preparing', 'cancelled'],
-  preparing: ['dispatched'],
-  dispatched: ['delivered'],
-  searching_rider: ['accepted', 'cancelled'],
+  preparing: ['searching_rider'],
+  searching_rider: ['rider_assigned', 'cancelled'],
+  rider_assigned: ['arrived_at_pickup', 'searching_rider'],
+  arrived_at_pickup: ['picked_up'],
+  picked_up: ['on_the_way'],
+  on_the_way: ['delivered'],
 };
 
 /**
@@ -182,6 +185,20 @@ exports.createOrder = async (req, res) => {
       return res.status(400).json({ message: 'Vendor unavailable' });
     }
 
+    if (
+      !vendor.location ||
+      !vendor.location.coordinates ||
+      vendor.location.coordinates.length !== 2
+    ) {
+      return res.status(400).json({ message: "Vendor missing location" });
+    }
+
+    if(!vendor.onboardingCompleted){
+      return res.status(400).json({
+         message: "Vendor onboarding incomplete",
+       });
+    }
+
     let subtotal = 0;
     const orderItems = [];
 
@@ -213,7 +230,10 @@ exports.createOrder = async (req, res) => {
       deliveryFee,
       total,
       deliveryAddress,
-      status: 'pending'
+      pickupLocation: vendor.location,
+      zone: vendor.zone,
+      status: 'pending',
+      assignmentAttempts: 0
     });
 
     await publish('order.created', {
@@ -228,10 +248,13 @@ exports.createOrder = async (req, res) => {
       message: 'Order created',
       order: withExpiry(order)
     });
+
   } catch (err) {
     console.error('Create Order Error:', err);
     res.status(500).json({ message: 'Server error' });
   }
+
+  console.log("body:", req.body);
 };
 
 /**
@@ -308,7 +331,7 @@ exports.updateOrderStatus = async (req, res) => {
     }
 
     if (
-      ['preparing', 'on_the_way', 'delivered'].includes(status) &&
+      ['preparing', 'searching_rider'].includes(status) &&
       order.paymentStatus !== 'paid'
     ) {
       return res.status(400).json({
@@ -317,6 +340,12 @@ exports.updateOrderStatus = async (req, res) => {
     }
 
     order.status = status;
+    await order.save();
+
+    if (status === 'searching_rider') {
+      const { assignRiderToOrder } = require('../services/riderMatching');
+      assignRiderToOrder(order._id);
+    }
 
     /**
      * =======================

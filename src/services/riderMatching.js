@@ -4,9 +4,6 @@ const Order = require("../models/Order");
 const MAX_ASSIGNMENT_ATTEMPTS = 5;
 const RESPONSE_TIMEOUT_MS = 30 * 1000;
 
-/**
- * Calculate distance between coordinates (Haversine)
- */
 function getDistanceKm(lat1, lng1, lat2, lng2) {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -22,12 +19,13 @@ function getDistanceKm(lat1, lng1, lat2, lng2) {
 }
 
 async function findEligibleRiders(order) {
+
   const riders = await Rider.find({
     isAvailable: true,
-    currentLocation: { $exists: true },
+    isActive: true,
+    zone: order.zone, // 👈 FILTER BY ZONE
+    currentLocation: { $exists: true }
   });
-
-  if (!riders.length) return [];
 
   return riders
     .map(rider => ({
@@ -44,24 +42,38 @@ async function findEligibleRiders(order) {
 }
 
 async function tryAssignRider(order, rider) {
-  order.rider = rider.user;
-  order.status = "rider_assigned";
-  order.assignmentAttempts += 1;
-  await order.save();
 
-  // ✅ SINGLE, CONSISTENT EVENT
-  global.io?.to(`rider_${rider.user}`).emit("new_order", {
-    orderId: order._id
+  const updated = await Order.findOneAndUpdate(
+    {
+      _id: order._id,
+      status: "searching_rider",
+      rider: null
+    },
+    {
+      $set: {
+        rider: rider._id,
+        status: "rider_assigned"
+      },
+      $inc: { assignmentAttempts: 1 }
+    },
+    { new: true }
+  );
+
+  if (!updated) return false;
+
+  global.io?.to(`rider_${rider._id}`).emit("new_order", {
+    orderId: updated._id,
+    pickupLocation: updated.pickupLocation
   });
 
   return new Promise(resolve => {
     setTimeout(async () => {
-      const refreshed = await Order.findById(order._id);
+      const fresh = await Order.findById(updated._id);
 
-      if (refreshed.status === "rider_assigned") {
-        refreshed.rider = null;
-        refreshed.status = "searching_rider";
-        await refreshed.save();
+      if (fresh.status === "rider_assigned") {
+        fresh.rider = null;
+        fresh.status = "searching_rider";
+        await fresh.save();
         return resolve(false);
       }
 
@@ -74,8 +86,6 @@ exports.assignRiderToOrder = async (orderId) => {
   let order = await Order.findById(orderId);
   if (!order || !order.pickupLocation?.lat) return null;
 
-  order.assignmentAttempts ||= 0;
-
   if (order.assignmentAttempts >= MAX_ASSIGNMENT_ATTEMPTS) {
     order.status = "cancelled";
     await order.save();
@@ -86,15 +96,35 @@ exports.assignRiderToOrder = async (orderId) => {
   await order.save();
 
   const riders = await findEligibleRiders(order);
-  if (!riders.length) return null;
+    if (!riders.length) {
+    console.log("No riders in zone, expanding search...");
+    
+    const fallbackRiders = await Rider.find({
+      isAvailable: true,
+      isActive: true,
+      currentLocation: { $exists: true }
+    });
+
+    return fallbackRiders
+      .map(rider => ({
+        rider,
+        distance: getDistanceKm(
+          order.pickupLocation.lat,
+          order.pickupLocation.lng,
+          rider.currentLocation.lat,
+          rider.currentLocation.lng
+        )
+      }))
+      .sort((a, b) => a.distance - b.distance)
+      .map(r => r.rider);
+  }
 
   for (const rider of riders) {
     const success = await tryAssignRider(order, rider);
 
     if (success) {
-      // Notify customer only (MVP)
       global.io?.to(`order_${order._id}`).emit("rider_assigned", {
-        riderId: rider.user,
+        riderId: rider._id,
         orderId: order._id
       });
 

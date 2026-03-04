@@ -3,6 +3,7 @@ const Order = require("../models/Order");
 const RiderWallet = require("../models/RiderWallet");
 const RiderEarning = require("../models/RiderEarning");
 const RiderTransaction = require("../models/RiderTransaction");
+const cloudinary = require("../config/cloudinary");
 
 /**
  * CREATE rider profile (admin/manual)
@@ -74,7 +75,7 @@ exports.updateLocation = async (req, res) => {
   try {
     const { lat, lng } = req.body;
 
-    if (!lat || !lng) {
+    if (lat === undefined || lng === undefined) {
       return res.status(400).json({ message: "Lat & Lng required" });
     }
 
@@ -84,11 +85,15 @@ exports.updateLocation = async (req, res) => {
       return res.status(403).json({ message: "Inactive rider cannot update location" });
     }
 
-    rider.currentLocation = { lat, lng };
+    rider.currentLocation = { 
+      lat, 
+      lng,
+      updatedAt: new Date()
+    };
+
     rider.lastActiveAt = new Date();
     await rider.save();
 
-    // LIVE GPS STREAM
     global.io?.emit("rider_location_update", {
       riderId: rider._id,
       lat,
@@ -108,6 +113,7 @@ exports.updateLocation = async (req, res) => {
     res.json({ success: true, rider });
 
   } catch (err) {
+    console.error("❌ updateLocation error:", err);
     res.status(500).json({ message: "Failed to update location", error: err.message });
   }
 };
@@ -136,10 +142,18 @@ exports.assignRider = async (req, res) => {
     order.status = "rider_assigned";
     await order.save();
 
-    global.io?.to(`order_${order._id}`).emit("order_status_update", order);
+    // 🔔 Notify rider directly
+    global.io
+      ?.to(`rider_${rider._id}`)
+      .emit("new_order", order);
+
+    // Existing order updates
+    global.io
+      ?.to(`order_${order._id}`)
+      .emit("order_status_update", order);
 
     res.json({ message: "Rider assigned", order });
-  } catch {
+  } catch (err) {
     res.status(500).json({ message: "Failed to assign rider" });
   }
 };
@@ -339,6 +353,7 @@ exports.rejectDelivery = async (req, res) => {
 
     order.rider = null;
     order.status = "searching_rider";
+    order.assignmentAttempts += 1;
     await order.save();
 
     const { assignRiderToOrder } = require("../services/riderMatching");
@@ -415,5 +430,40 @@ exports.getRiderDashboard = async (req, res) => {
   } catch (err) {
     console.error("❌ Rider dashboard error:", err);
     res.status(500).json({ message: "Server error loading dashboard" });
+  }
+};
+
+exports.updateProfileImage = async (req, res) => {
+  try {
+    const rider = await Rider.findOne({ user: req.user.id });
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    const { imageUrl, publicId } = req.body;
+
+    if (!imageUrl || !publicId) {
+      return res.status(400).json({ message: "Image data required" });
+    }
+
+    // delete old image from cloudinary
+    if (rider.profileImage?.publicId) {
+      await cloudinary.uploader.destroy(rider.profileImage.publicId);
+    }
+
+    rider.profileImage = {
+      url: imageUrl,
+      publicId: publicId,
+    };
+
+    await rider.save();
+
+    res.json({
+      message: "Profile image updated",
+      profileImage: rider.profileImage,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
   }
 };

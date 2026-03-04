@@ -1,5 +1,7 @@
 const router = require("express").Router();
 const protect = require("../middleware/protectRider");
+const auth = require("../middleware/auth");
+const allow = require("../middleware/allow");
 
 const { getMyWallet } = require("../controllers/riderWalletController");
 const {
@@ -21,7 +23,8 @@ const {
   startTrip,
   completeDelivery,
   updateRiderStatus,
-  getRiderDashboard
+  getRiderDashboard,
+  updateProfileImage
 } = require("../controllers/riderController");
 
 // imports
@@ -50,7 +53,12 @@ router.post("/order/:orderId/reject", protect, rejectDelivery);
 router.post("/order/:orderId/arrived", protect, markArrivedPickup);
 router.post("/order/:orderId/start-trip", protect, startTrip);
 router.post("/order/:orderId/complete", protect, completeDelivery);
-
+router.patch(
+  "/profile-image",
+  auth,
+  allow("rider"),
+  updateProfileImage
+);
 // ================= WALLET =================
 
 router.get("/me/wallet", protect, getMyWallet);
