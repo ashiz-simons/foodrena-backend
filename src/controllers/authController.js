@@ -213,3 +213,82 @@ exports.verifyAdminOtp = async (req, res) => {
 
   res.json({ token, user: { id: admin._id, email: admin.email, role: admin.role } });
 };
+
+/* =========================
+   REGISTER ADMIN
+========================= */
+exports.registerAdmin = async (req, res) => {
+  try {
+    const { name, email, password, phone, location, adminKey, securityQuestions } = req.body;
+
+    if (!adminKey || adminKey !== process.env.ADMIN_SECRET_KEY) {
+      return res.status(403).json({ message: "Invalid admin key" });
+    }
+
+    if (!name || !email || !password || !phone || !location) {
+      return res.status(400).json({
+        message: "Name, email, password, phone and location are required",
+      });
+    }
+
+    if (
+      !location.type ||
+      location.type !== "Point" ||
+      !Array.isArray(location.coordinates) ||
+      location.coordinates.length !== 2
+    ) {
+      return res.status(400).json({ message: "Invalid location format. Must be GeoJSON Point." });
+    }
+
+    const [lng, lat] = location.coordinates;
+    if (typeof lng !== "number" || typeof lat !== "number") {
+      return res.status(400).json({ message: "Coordinates must be numbers [lng, lat]" });
+    }
+
+    const exists = await User.findOne({ email });
+    if (exists) {
+      return res.status(400).json({ message: "Email already exists" });
+    }
+
+    let hashedQuestions = [];
+    if (securityQuestions && Array.isArray(securityQuestions)) {
+      hashedQuestions = await Promise.all(
+        securityQuestions.map(async (q) => ({
+          question: q.question,
+          answerHash: await bcrypt.hash(q.answer.toLowerCase().trim(), 10),
+        }))
+      );
+    }
+
+    const admin = await User.create({
+      name,
+      email,
+      password,
+      role: "admin",
+      phone,
+      location: { type: "Point", coordinates: [lng, lat] },
+      emailVerified: true,
+      twoFactorEnabled: true,
+      securityQuestions: hashedQuestions,
+    });
+
+    await sendEmail(
+      admin.email,
+      "Admin Account Created",
+      `<p>Hi <b>${admin.name}</b>, your Foodrena admin account has been created successfully.</p>`
+    );
+
+    res.status(201).json({
+      message: "Admin account created successfully",
+      user: {
+        id: admin._id,
+        name: admin.name,
+        email: admin.email,
+        role: admin.role,
+      },
+    });
+  } catch (error) {
+    console.error("REGISTER ADMIN ERROR:", error);
+    res.status(500).json({ message: "Admin registration failed" });
+  }
+};
