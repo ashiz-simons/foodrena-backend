@@ -7,14 +7,12 @@ const REDIS_ENABLED =
 
 if (!REDIS_ENABLED) {
   console.warn('⚠️ Redis explicitly disabled via REDIS_ENABLED');
-
   module.exports = {
     publish: async () => {},
     get: async () => null,
     set: async () => null,
     quit: async () => {}
   };
-
   return;
 }
 
@@ -24,8 +22,7 @@ const redis = new Redis({
   host: process.env.REDIS_HOST || '127.0.0.1',
   port: Number(process.env.REDIS_PORT) || 6379,
   password: process.env.REDIS_PASSWORD || undefined,
-  // ✅ Upstash requires TLS
-  tls: REDIS_TLS ? {} : undefined,
+  tls: REDIS_TLS ? {} : undefined,  // ✅ Upstash requires TLS
   lazyConnect: true,
   retryStrategy: (times) => {
     if (times > 5) return null; // stop retrying after 5 attempts
