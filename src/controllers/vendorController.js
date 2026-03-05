@@ -143,6 +143,7 @@ exports.getVendors = async (req, res) => {
     {
       businessName: 1,
       isOpen: 1,
+      logo: 1,
     }
   );
 

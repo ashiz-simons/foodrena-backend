@@ -31,3 +31,4 @@ exports.addOrUpdateBank = async (req, res) => {
 
   res.json(vendor.bank);
 };
+
