@@ -335,6 +335,10 @@ exports.switchRole = async (req, res) => {
     }
 
     // Add role to roles array if not already there
+    // Fallback for existing users who don't have roles array yet
+    if (!Array.isArray(user.roles)) {
+      user.roles = [user.role];
+    }
     if (!user.roles.includes(role)) {
       user.roles.push(role);
     }
