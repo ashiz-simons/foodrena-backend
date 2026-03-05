@@ -26,6 +26,7 @@ const adminSettingsRoutes = require("./routes/adminSettings.routes");
 const unlockRiderEarnings = require("./jobs/unlockRiderEarnings");
 const riderTrackingSocket = require("./sockets/riderTracking");
 const uploadRoutes = require('./routes/upload');
+const startKeepAlive = require("./utils/keepAlive");
 
 setInterval(unlockRiderEarnings, 5 * 60 * 1000);
 
@@ -143,6 +144,7 @@ connectDB(config.mongoUri)
   .then(() => {
     server.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 API + Socket.IO running on port ${PORT}`);
+      startKeepAlive();
     });
   })
   .catch(err => {
