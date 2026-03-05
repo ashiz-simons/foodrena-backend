@@ -171,6 +171,8 @@ async function expireIfVendorLate(order) {
  * CREATE ORDER
  * =======================
  */
+// Replace the top of createOrder with this:
+
 exports.createOrder = async (req, res) => {
   try {
     const userId = req.user._id;
@@ -178,6 +180,21 @@ exports.createOrder = async (req, res) => {
 
     if (!items || !items.length) {
       return res.status(400).json({ message: 'Order items required' });
+    }
+
+    // ✅ Idempotency check — block duplicate orders within 30 seconds
+    const recentDuplicate = await Order.findOne({
+      user: userId,
+      vendor: vendorId,
+      status: { $in: ['pending', 'accepted', 'preparing'] },
+      createdAt: { $gte: new Date(Date.now() - 30 * 1000) },
+    });
+
+    if (recentDuplicate) {
+      return res.status(409).json({
+        message: 'Duplicate order detected. Please wait before placing another.',
+        orderId: recentDuplicate._id,
+      });
     }
 
     const vendor = await Vendor.findById(vendorId);
@@ -253,8 +270,6 @@ exports.createOrder = async (req, res) => {
     console.error('Create Order Error:', err);
     res.status(500).json({ message: 'Server error' });
   }
-
-  console.log("body:", req.body);
 };
 
 /**
