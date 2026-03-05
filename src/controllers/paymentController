@@ -131,19 +131,28 @@ exports.initiatePayment = async (req, res) => {
 exports.verifyPayment = async (req, res) => {
   try {
     const reference = req.params.reference;
-    const { assignRiderToOrder } = require('../services/riderMatching');
+    const userId = req.user._id; // ✅ auth required now
 
-    const result = await verifyTransaction(reference);
-
-    if (!result?.data || result.data.status !== 'success') {
-      return res.status(400).json({ message: 'Payment not successful' });
+    // 1. Extract orderId from reference
+    const orderId = reference.split('_')[1];
+    if (!orderId) {
+      return res.status(400).json({ message: 'Invalid reference' });
     }
 
-    const orderId = reference.split('_')[1];
-    const order = await Order.findById(orderId);
-
+    // 2. Find order and confirm it belongs to this user
+    const order = await Order.findOne({ _id: orderId, user: userId });
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
+    }
+
+    // 3. Confirm reference matches what we stored
+    if (order.reference !== reference) {
+      return res.status(400).json({ message: 'Reference mismatch' });
+    }
+
+    // 4. Already paid — just return success so frontend can navigate
+    if (order.paymentStatus === 'paid') {
+      return res.json({ message: 'Payment verified', status: 'paid' });
     }
 
     if (isExpired(order)) {
@@ -152,19 +161,36 @@ exports.verifyPayment = async (req, res) => {
       return res.status(400).json({ message: 'Order expired' });
     }
 
-    if (order.paymentStatus === 'paid') {
-      return res.json({ message: 'Payment already processed' });
+    // 5. Ask Paystack directly — source of truth
+    const result = await verifyTransaction(reference);
+
+    if (!result?.data || result.data.status !== 'success') {
+      return res.status(402).json({ message: 'Payment not completed yet' });
     }
 
-    order.paymentStatus = 'paid';
-    order.status = 'searching_rider';
-    order.paidAt = new Date();
-    await order.save();
+    // 6. Atomic update — prevent race with webhook
+    const updated = await Order.findOneAndUpdate(
+      { _id: orderId, paymentStatus: { $ne: 'paid' } },
+      {
+        $set: {
+          paymentStatus: 'paid',
+          status: 'searching_rider',
+          paidAt: new Date(),
+        },
+      },
+      { new: true }
+    );
 
-    await createEarning(order);
-    await assignRiderToOrder(order._id);
+    // Webhook already handled it — still a success for the user
+    if (!updated) {
+      return res.json({ message: 'Payment verified', status: 'paid' });
+    }
 
-    return res.json({ message: 'Payment verified successfully' });
+    const { assignRiderToOrder } = require('../services/riderMatching');
+    await createEarning(updated);
+    await assignRiderToOrder(updated._id);
+
+    return res.json({ message: 'Payment verified', status: 'paid' });
 
   } catch (err) {
     console.error('❌ PAYSTACK VERIFY ERROR:', err.message);

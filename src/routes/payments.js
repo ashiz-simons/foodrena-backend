@@ -4,9 +4,8 @@ const auth = require('../middleware/auth');
 const paymentController = require('../controllers/paymentController');
 
 router.post('/initiate', auth, paymentController.initiatePayment);
-router.get('/verify/:reference', paymentController.verifyPayment);
+router.get('/verify/:reference', auth, paymentController.verifyPayment); // ✅ auth added
 
-// ✅ RAW BODY ONLY HERE
 router.post(
   '/webhook',
   express.raw({ type: 'application/json' }),
