@@ -28,6 +28,7 @@ router.post('/menu', protectVendor, vendorController.addMenuItem);
 router.patch('/menu/:menuItemId/image', auth, allow("vendor"), vendorController.updateMenuItemImage);
 router.put('/menu/:menuItemId', auth, allow("vendor"), vendorController.updateMenuItem);
 router.delete('/menu/:menuItemId', auth, allow("vendor"), vendorController.deleteMenuItem);
+router.get('/popular-dishes', vendorController.getPopularDishes);
 
 // ================= PUBLIC (wildcard :id routes last) =================
 router.get('/', vendorController.getVendors);

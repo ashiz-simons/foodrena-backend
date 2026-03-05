@@ -391,3 +391,66 @@ exports.completeOnboarding = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+exports.getPopularDishes = async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+
+    // Aggregate order items across all delivered orders
+    const popular = await Order.aggregate([
+      { $match: { status: "delivered" } },
+      { $unwind: "$items" },
+      {
+        $group: {
+          _id: "$items.menuItemId",
+          name: { $first: "$items.name" },
+          price: { $first: "$items.price" },
+          orderCount: { $sum: "$items.quantity" },
+          vendorId: { $first: "$vendor" },
+        },
+      },
+      { $sort: { orderCount: -1 } },
+      { $limit: limit },
+      {
+        $lookup: {
+          from: "vendors",
+          localField: "vendorId",
+          foreignField: "_id",
+          as: "vendorData",
+        },
+      },
+      { $unwind: { path: "$vendorData", preserveNullAndEmptyArrays: true } },
+      // Get image from vendor's menuItems
+      {
+        $addFields: {
+          menuItem: {
+            $first: {
+              $filter: {
+                input: { $ifNull: ["$vendorData.menuItems", []] },
+                as: "m",
+                cond: { $eq: ["$$m._id", "$_id"] },
+              },
+            },
+          },
+        },
+      },
+      {
+        $project: {
+          _id: 1,
+          name: 1,
+          price: 1,
+          orderCount: 1,
+          imageUrl: "$menuItem.image.url",
+          vendorId: "$vendorData._id",
+          vendorName: "$vendorData.businessName",
+          vendorLogoUrl: "$vendorData.logo.url",
+        },
+      },
+    ]);
+
+    res.json(popular);
+  } catch (err) {
+    console.error("GET POPULAR DISHES ERROR:", err);
+    res.status(500).json({ message: "Failed to fetch popular dishes" });
+  }
+};
