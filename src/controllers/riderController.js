@@ -467,3 +467,38 @@ exports.updateProfileImage = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+// In your riders controller, add:
+exports.updateVehicle = async (req, res) => {
+  try {
+    const { vehicleType, vehiclePlate } = req.body;
+    const userId = req.user._id;
+
+    let rider = await Rider.findOne({ user: userId });
+
+    if (!rider) {
+      // Create rider profile if it doesn't exist yet
+      rider = await Rider.create({
+        user: userId,
+        vehicleType,
+        vehiclePlate,
+        isAvailable: false,
+        isActive: true,
+        currentLocation: {
+          type: "Point",
+          coordinates: req.user.location?.coordinates || [0, 0],
+        },
+        lastActiveAt: new Date(),
+      });
+    } else {
+      rider.vehicleType = vehicleType;
+      rider.vehiclePlate = vehiclePlate;
+      await rider.save();
+    }
+
+    res.json({ message: "Vehicle info saved", rider });
+  } catch (err) {
+    console.error("UPDATE VEHICLE ERROR:", err);
+    res.status(500).json({ message: "Failed to save vehicle info" });
+  }
+};

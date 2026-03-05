@@ -292,3 +292,73 @@ exports.registerAdmin = async (req, res) => {
     res.status(500).json({ message: "Admin registration failed" });
   }
 };
+
+/* =========================
+   SWITCH ROLE
+========================= */
+exports.switchRole = async (req, res) => {
+  try {
+    const { role } = req.body;
+    const userId = req.user._id;
+
+    const validRoles = ["customer", "rider", "vendor"];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ message: "Invalid role" });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    // If switching to rider, check if rider profile + vehicle info exists
+    if (role === "rider") {
+      const rider = await Rider.findOne({ user: userId });
+      if (!rider || !rider.vehicleType || !rider.vehiclePlate) {
+        return res.status(400).json({
+          message: "Vehicle info required",
+          requiresVehicleInfo: true,
+        });
+      }
+    }
+
+    // If switching to vendor, check if vendor profile exists
+    if (role === "vendor") {
+      const vendor = await Vendor.findOne({ owner: userId });
+      if (!vendor) {
+        await Vendor.create({
+          owner: userId,
+          phone: user.phone,
+          location: user.location,
+          status: "pending",
+          isOpen: false,
+        });
+      }
+    }
+
+    // Add role to roles array if not already there
+    if (!user.roles.includes(role)) {
+      user.roles.push(role);
+    }
+
+    user.activeRole = role;
+    user.role = role;
+    await user.save();
+
+    const token = signToken({ id: user._id, role });
+
+    res.json({
+      message: `Switched to ${role}`,
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role,
+        activeRole: role,
+        roles: user.roles,
+      },
+    });
+  } catch (err) {
+    console.error("SWITCH ROLE ERROR:", err);
+    res.status(500).json({ message: "Role switch failed" });
+  }
+};

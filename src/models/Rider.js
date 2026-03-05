@@ -10,6 +10,18 @@ const RiderSchema = new mongoose.Schema(
       unique: true,
     },
 
+    roles: {
+      type: [String],
+      enum: ["customer", "rider", "vendor", "admin"],
+      default: ["customer"],
+    },
+
+    activeRole: {
+      type: String,
+      enum: ["customer", "rider", "vendor", "admin"],
+      default: "customer",
+    },
+
     vehicleType: {
       type: String,
       enum: ["bike", "car", "truck"],
