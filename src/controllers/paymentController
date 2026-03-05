@@ -102,6 +102,7 @@ exports.initiatePayment = async (req, res) => {
       email: req.user.email,
       amount: Math.round(order.total * 100),
       reference,
+      callback_url: `${process.env.APP_BASE_URL}/payment/success?status=success&reference=${reference}`,
     });
 
     order.paymentProvider = 'paystack';
