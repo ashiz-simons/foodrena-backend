@@ -19,7 +19,7 @@ const OrderSchema = new mongoose.Schema(
     vendor: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Vendor',
-      required: false, // allow null for package deliveries
+      required: false,
     },
 
     rider: {
@@ -41,7 +41,6 @@ const OrderSchema = new mongoose.Schema(
     deliveryFee: { type: Number, default: 0 },
     total: { type: Number, default: 0 },
 
-    // Platform accounting
     platformFee: { type: Number, default: 0 },
     vendorNetAmount: { type: Number, default: 0 },
     riderPayout: { type: Number, default: 0 },
@@ -58,16 +57,22 @@ const OrderSchema = new mongoose.Schema(
       enum: ['stripe', 'paystack'],
     },
 
+    // ✅ Added — was missing, causing Mongoose to silently drop it on save
+    reference: {
+      type: String,
+      default: null,
+    },
+
     paidAt: Date,
 
     // ---------------- DELIVERY FLOW ----------------
     status: {
       type: String,
       enum: [
-        'pending',          // created
-        'accepted',         // vendor accepted
-        'preparing',        // vendor preparing
-        'searching_rider',  
+        'pending',
+        'accepted',
+        'preparing',
+        'searching_rider',
         'rider_assigned',
         'arrived_at_pickup',
         'picked_up',
@@ -108,8 +113,7 @@ const OrderSchema = new mongoose.Schema(
 
     zone: {
       type: String,
-      required: true,
-      index: true
+      index: true,
     },
 
     // ---------------- DISTANCE & ETA ----------------
