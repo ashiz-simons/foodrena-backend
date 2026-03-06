@@ -7,11 +7,6 @@ const Earning = require('../models/Earning');
 const Wallet = require('../models/Wallet');
 const finalizeOrderSettlement = require("../services/finalizeOrderSettlement");
 
-/**
- * =======================
- * SAFE FINALIZE WRAPPER
- * =======================
- */
 async function safeFinalizeSettlement(orderId) {
   try {
     await finalizeOrderSettlement(orderId);
@@ -20,19 +15,9 @@ async function safeFinalizeSettlement(orderId) {
   }
 }
 
-/**
- * =======================
- * TIMEOUTS
- * =======================
- */
 const ORDER_EXPIRY_MS = 30 * 60 * 1000;
 const VENDOR_ACCEPT_TIMEOUT_MS = 10 * 60 * 1000;
 
-/**
- * =======================
- * ORDER FLOW RULES
- * =======================
- */
 const ALLOWED_TRANSITIONS = {
   pending: ['accepted', 'cancelled'],
   accepted: ['preparing', 'cancelled'],
@@ -44,11 +29,6 @@ const ALLOWED_TRANSITIONS = {
   on_the_way: ['delivered'],
 };
 
-/**
- * =======================
- * SAFE REDIS PUBLISH
- * =======================
- */
 async function publish(event, payload) {
   if (!redis) return;
   try {
@@ -58,11 +38,6 @@ async function publish(event, payload) {
   }
 }
 
-/**
- * =======================
- * REFUND HELPER (SAFE + IDEMPOTENT)
- * =======================
- */
 async function refundOrderIfNeeded(order, reason) {
   if (
     order.paymentStatus !== "paid" ||
@@ -85,10 +60,7 @@ async function refundOrderIfNeeded(order, reason) {
 
       const wallet = await Wallet.findOne({ vendor: order.vendor });
       if (wallet) {
-        wallet.pendingBalance = Math.max(
-          0,
-          wallet.pendingBalance - earning.netAmount
-        );
+        wallet.pendingBalance = Math.max(0, wallet.pendingBalance - earning.netAmount);
         await wallet.save();
       }
     }
@@ -96,7 +68,6 @@ async function refundOrderIfNeeded(order, reason) {
     order.vendorEarningRecorded = true;
     order.riderPaid = true;
     order.platformProfitRecorded = true;
-
     order.refundStatus = "refunded";
     order.refundedAt = new Date();
     await order.save();
@@ -107,15 +78,9 @@ async function refundOrderIfNeeded(order, reason) {
   }
 }
 
-/**
- * =======================
- * EXPIRY HELPERS
- * =======================
- */
 function withExpiry(order) {
   const createdAt = order.createdAt.getTime();
   const now = Date.now();
-
   return {
     ...order.toObject(),
     paymentExpiresAt: new Date(createdAt + ORDER_EXPIRY_MS),
@@ -134,12 +99,7 @@ async function expireIfUnpaid(order) {
     order.status = 'cancelled';
     order.cancelledAt = new Date();
     await order.save();
-
-    await publish('order.cancelled', {
-      orderId: order._id,
-      reason: 'payment_timeout'
-    });
-
+    await publish('order.cancelled', { orderId: order._id, reason: 'payment_timeout' });
     return true;
   }
   return false;
@@ -153,14 +113,8 @@ async function expireIfVendorLate(order) {
     order.status = 'cancelled';
     order.cancelledAt = new Date();
     await order.save();
-
     await refundOrderIfNeeded(order, 'Vendor did not accept in time');
-
-    await publish('order.cancelled', {
-      orderId: order._id,
-      reason: 'vendor_timeout'
-    });
-
+    await publish('order.cancelled', { orderId: order._id, reason: 'vendor_timeout' });
     return true;
   }
   return false;
@@ -171,8 +125,6 @@ async function expireIfVendorLate(order) {
  * CREATE ORDER
  * =======================
  */
-// Replace the top of createOrder with this:
-
 exports.createOrder = async (req, res) => {
   try {
     const userId = req.user._id;
@@ -182,7 +134,6 @@ exports.createOrder = async (req, res) => {
       return res.status(400).json({ message: 'Order items required' });
     }
 
-    // ✅ Idempotency check — block duplicate orders within 30 seconds
     const recentDuplicate = await Order.findOne({
       user: userId,
       vendor: vendorId,
@@ -210,10 +161,8 @@ exports.createOrder = async (req, res) => {
       return res.status(400).json({ message: "Vendor missing location" });
     }
 
-    if(!vendor.onboardingCompleted){
-      return res.status(400).json({
-         message: "Vendor onboarding incomplete",
-       });
+    if (!vendor.onboardingCompleted) {
+      return res.status(400).json({ message: "Vendor onboarding incomplete" });
     }
 
     let subtotal = 0;
@@ -239,6 +188,10 @@ exports.createOrder = async (req, res) => {
     const deliveryFee = 500;
     const total = subtotal + deliveryFee;
 
+    // ✅ Extract lat/lng from vendor's GeoJSON coordinates
+    // vendor.location = { type: "Point", coordinates: [lng, lat] }
+    const [vendorLng, vendorLat] = vendor.location.coordinates;
+
     const order = await Order.create({
       user: userId,
       vendor: vendorId,
@@ -247,7 +200,15 @@ exports.createOrder = async (req, res) => {
       deliveryFee,
       total,
       deliveryAddress,
-      pickupLocation: vendor.location,
+
+      // ✅ Store as {lat, lng} to match Order model schema
+      // riderMatching.js reads this correctly now
+      pickupLocation: {
+        lat: vendorLat,
+        lng: vendorLng,
+        address: vendor.address?.street || "",
+      },
+
       zone: vendor.zone,
       status: 'pending',
       assignmentAttempts: 0
@@ -349,9 +310,7 @@ exports.updateOrderStatus = async (req, res) => {
       ['preparing', 'searching_rider'].includes(status) &&
       order.paymentStatus !== 'paid'
     ) {
-      return res.status(400).json({
-        message: 'Payment must be completed first'
-      });
+      return res.status(400).json({ message: 'Payment must be completed first' });
     }
 
     order.status = status;
@@ -362,11 +321,6 @@ exports.updateOrderStatus = async (req, res) => {
       assignRiderToOrder(order._id);
     }
 
-    /**
-     * =======================
-     * RELEASE EARNINGS (SAFE)
-     * =======================
-     */
     if (status === 'delivered') {
       order.deliveredAt = new Date();
 
@@ -379,10 +333,7 @@ exports.updateOrderStatus = async (req, res) => {
         const wallet = await Wallet.findOne({ vendor: order.vendor });
         if (wallet) {
           wallet.balance += earning.netAmount;
-          wallet.pendingBalance = Math.max(
-            0,
-            wallet.pendingBalance - earning.netAmount
-          );
+          wallet.pendingBalance = Math.max(0, wallet.pendingBalance - earning.netAmount);
           await wallet.save();
         }
       }
@@ -392,18 +343,18 @@ exports.updateOrderStatus = async (req, res) => {
 
     await order.save();
 
-    await publish('order.status.updated', {
+    await publish('order.status.updated', { orderId: order._id, status });
+
+    // ✅ Also notify via socket so customers see status update in real time
+    global.io?.to(`order_${order._id}`).emit("order_status_update", {
       orderId: order._id,
-      status
+      status,
     });
 
-    res.json({
-      message: 'Order status updated',
-      order
-    });
+    res.json({ message: 'Order status updated', order });
+
   } catch (err) {
     console.error('Update Order Error:', err);
     res.status(500).json({ message: 'Server error' });
   }
 };
-

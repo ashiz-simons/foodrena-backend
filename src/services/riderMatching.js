@@ -2,7 +2,7 @@ const Rider = require("../models/Rider");
 const Order = require("../models/Order");
 
 const MAX_ASSIGNMENT_ATTEMPTS = 5;
-const RESPONSE_TIMEOUT_MS = 30 * 1000; // 30s for rider to accept
+const RESPONSE_TIMEOUT_MS = 30 * 1000;
 
 // ─── Haversine distance ───────────────────────────────
 function getDistanceKm(lat1, lng1, lat2, lng2) {
@@ -20,51 +20,106 @@ function getDistanceKm(lat1, lng1, lat2, lng2) {
 // ─── Sort riders by distance from pickup ─────────────
 function sortByDistance(riders, pickupLat, pickupLng) {
   return riders
-    .filter(r => r.currentLocation?.coordinates?.length === 2)
-    .map(r => ({
-      rider: r,
-      distance: getDistanceKm(
-        pickupLat,
-        pickupLng,
-        r.currentLocation.coordinates[1], // lat
-        r.currentLocation.coordinates[0]  // lng
-      ),
-    }))
+    .filter(r => {
+      // Support both GeoJSON {coordinates: [lng, lat]}
+      // and legacy {lat, lng} storage
+      const coords = r.currentLocation?.coordinates;
+      const hasGeo = Array.isArray(coords) && coords.length === 2;
+      const hasLatLng =
+        r.currentLocation?.lat !== undefined &&
+        r.currentLocation?.lng !== undefined;
+      return hasGeo || hasLatLng;
+    })
+    .map(r => {
+      let riderLat, riderLng;
+      if (Array.isArray(r.currentLocation?.coordinates)) {
+        [riderLng, riderLat] = r.currentLocation.coordinates; // GeoJSON: [lng, lat]
+      } else {
+        riderLat = r.currentLocation.lat;
+        riderLng = r.currentLocation.lng;
+      }
+      return {
+        rider: r,
+        distance: getDistanceKm(pickupLat, pickupLng, riderLat, riderLng),
+      };
+    })
     .sort((a, b) => a.distance - b.distance)
     .map(r => r.rider);
 }
 
-// ─── Find eligible riders (zone-first, fallback global) ──
-async function findEligibleRiders(order) {
-  const [pickupLng, pickupLat] = order.pickupLocation.coordinates;
+// ─── Extract pickup lat/lng from order (handles both formats) ──
+function getPickupCoords(order) {
+  const loc = order.pickupLocation;
+  if (!loc) return null;
 
-  // Try zone-matched riders first
-  let riders = await Rider.find({
-    isAvailable: true,
-    isActive: true,
-    zone: order.zone,
-    "currentLocation.coordinates": { $exists: true },
-  });
-
-  if (riders.length > 0) {
-    console.log(`✅ Found ${riders.length} riders in zone ${order.zone}`);
-    return sortByDistance(riders, pickupLat, pickupLng);
+  // GeoJSON format: { type: "Point", coordinates: [lng, lat] }
+  if (Array.isArray(loc.coordinates) && loc.coordinates.length === 2) {
+    return { lat: loc.coordinates[1], lng: loc.coordinates[0] };
   }
 
-  // Fallback: any available rider
-  console.log(`⚠️ No riders in zone ${order.zone}, expanding search...`);
-  riders = await Rider.find({
-    isAvailable: true,
-    isActive: true,
-    "currentLocation.coordinates": { $exists: true },
-  });
+  // Flat format: { lat, lng }
+  if (loc.lat !== undefined && loc.lng !== undefined) {
+    return { lat: loc.lat, lng: loc.lng };
+  }
 
-  return sortByDistance(riders, pickupLat, pickupLng);
+  return null;
+}
+
+// ─── Find eligible riders sorted by proximity ──
+async function findEligibleRiders(order) {
+  const pickup = getPickupCoords(order);
+  if (!pickup) {
+    console.error(`assignRiderToOrder: cannot read pickupLocation for order ${order._id}`);
+    return [];
+  }
+
+  const { lat: pickupLat, lng: pickupLng } = pickup;
+
+  // Build base query — available and active
+  const baseQuery = { isAvailable: true, isActive: true };
+
+  // Try zone-matched riders first (if order has a zone)
+  if (order.zone) {
+    const zoneRiders = await Rider.find({ ...baseQuery, zone: order.zone });
+    if (zoneRiders.length > 0) {
+      console.log(`✅ Found ${zoneRiders.length} riders in zone ${order.zone}`);
+      return sortByDistance(zoneRiders, pickupLat, pickupLng);
+    }
+    console.log(`⚠️ No riders in zone ${order.zone}, expanding search...`);
+  }
+
+  // Fallback: geo query within 10km of pickup using $nearSphere
+  // This works if riders have proper GeoJSON currentLocation
+  try {
+    const nearbyRiders = await Rider.find({
+      ...baseQuery,
+      currentLocation: {
+        $nearSphere: {
+          $geometry: {
+            type: "Point",
+            coordinates: [pickupLng, pickupLat],
+          },
+          $maxDistance: 10000, // 10km in meters
+        },
+      },
+    });
+
+    if (nearbyRiders.length > 0) {
+      console.log(`📍 Found ${nearbyRiders.length} nearby riders via geo query`);
+      return nearbyRiders; // already sorted by distance by $nearSphere
+    }
+  } catch (geoErr) {
+    console.warn("Geo query failed, falling back to manual sort:", geoErr.message);
+  }
+
+  // Final fallback: any available rider, sorted manually
+  const allRiders = await Rider.find(baseQuery);
+  console.log(`🌍 Fallback: using all ${allRiders.length} available riders`);
+  return sortByDistance(allRiders, pickupLat, pickupLng);
 }
 
 // ─── Try assigning a single rider, wait for acceptance ──
 async function tryAssignRider(order, rider) {
-  // Atomically claim the order for this rider
   const updated = await Order.findOneAndUpdate(
     { _id: order._id, status: "searching_rider", rider: null },
     {
@@ -74,29 +129,28 @@ async function tryAssignRider(order, rider) {
     { new: true }
   );
 
-  if (!updated) return false; // order was already taken or cancelled
+  if (!updated) return false;
 
   console.log(`📡 Notifying rider ${rider._id} of order ${order._id}`);
 
+  // Notify the rider via their personal socket room
   global.io?.to(`rider_${rider._id}`).emit("new_order", {
     orderId: updated._id,
     pickupLocation: updated.pickupLocation,
+    dropoffLocation: updated.dropoffLocation,
     items: updated.items,
     total: updated.total,
+    deliveryFee: updated.deliveryFee,
   });
 
-  // Wait for rider to accept (move status forward) or timeout
   return new Promise(resolve => {
     setTimeout(async () => {
       try {
         const fresh = await Order.findById(updated._id);
-
         if (!fresh) return resolve(false);
 
-        // Rider accepted — status moved past rider_assigned
         if (fresh.status !== "rider_assigned") return resolve(true);
 
-        // Timed out — reset for next rider
         console.log(`⏱ Rider ${rider._id} timed out, reassigning...`);
         await Order.findOneAndUpdate(
           { _id: order._id, status: "rider_assigned", rider: rider._id },
@@ -123,13 +177,12 @@ exports.assignRiderToOrder = async (orderId) => {
     }
 
     if (!["searching_rider", "rider_assigned"].includes(order.status)) {
-      console.log(`assignRiderToOrder: order ${orderId} not in searchable state (${order.status})`);
+      console.log(`assignRiderToOrder: order ${orderId} not searchable (${order.status})`);
       return null;
     }
 
-    // Check pickup location — uses GeoJSON coordinates [lng, lat]
-    if (!order.pickupLocation?.coordinates?.length) {
-      console.error(`assignRiderToOrder: order ${orderId} missing pickupLocation coordinates`);
+    if (!order.pickupLocation) {
+      console.error(`assignRiderToOrder: order ${orderId} missing pickupLocation`);
       return null;
     }
 
@@ -151,9 +204,7 @@ exports.assignRiderToOrder = async (orderId) => {
     const riders = await findEligibleRiders(order);
 
     if (!riders.length) {
-      console.warn(`No eligible riders found for order ${orderId}`);
-
-      // Retry after 60s
+      console.warn(`No eligible riders for order ${orderId}, retrying in 60s`);
       setTimeout(() => exports.assignRiderToOrder(orderId), 60 * 1000);
       return null;
     }
@@ -164,16 +215,16 @@ exports.assignRiderToOrder = async (orderId) => {
       if (success) {
         console.log(`✅ Rider ${rider._id} accepted order ${orderId}`);
 
-        global.io?.to(`order_${order._id}`).emit("rider_assigned", {
-          riderId: rider._id,
+        global.io?.to(`order_${order._id}`).emit("order_status_update", {
           orderId: order._id,
+          status: "rider_assigned",
+          riderId: rider._id,
         });
 
         return rider;
       }
     }
 
-    // All riders in this batch declined/timed out — retry recursively
     console.log(`🔄 All riders declined order ${orderId}, retrying...`);
     return exports.assignRiderToOrder(orderId);
 
