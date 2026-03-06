@@ -96,7 +96,9 @@ exports.initiatePayment = async (req, res) => {
       return res.status(400).json({ message: 'Order already paid' });
     }
 
-    const reference = `FR_${order._id}_${Date.now()}`;
+    // ✅ Reuse existing reference if already generated
+    // This ensures verify always matches what's stored on the order
+    const reference = order.reference || `FR_${order._id}_${Date.now()}`;
 
     const paystackResponse = await initializeTransaction({
       email: req.user.email,
@@ -105,18 +107,17 @@ exports.initiatePayment = async (req, res) => {
       callback_url: `${process.env.APP_BASE_URL}/payment/success?status=success&reference=${reference}`,
     });
 
-    order.paymentProvider = 'paystack';
-    order.reference = reference;
-    await order.save();
+    // Only save if reference is new
+    if (!order.reference) {
+      order.paymentProvider = 'paystack';
+      order.reference = reference;
+      await order.save();
+    }
 
     return res.json(paystackResponse.data);
 
   } catch (err) {
-    console.error(
-      '❌ PAYSTACK INIT ERROR:',
-      err.response?.data || err.message
-    );
-
+    console.error('❌ PAYSTACK INIT ERROR:', err.response?.data || err.message);
     return res.status(502).json({
       message: 'Payment gateway error',
       error: err.response?.data || 'Unable to reach Paystack'
@@ -170,7 +171,7 @@ exports.verifyPayment = async (req, res) => {
     // 5. Ask Paystack directly — source of truth
     const result = await verifyTransaction(reference);
      console.log("🔍 PAYSTACK RESULT:", JSON.stringify(result?.data?.status));
-     
+
     if (!result?.data || result.data.status !== 'success') {
       return res.status(402).json({ message: 'Payment not completed yet' });
     }
