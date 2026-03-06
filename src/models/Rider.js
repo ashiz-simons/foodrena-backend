@@ -1,25 +1,12 @@
 const mongoose = require("mongoose");
 
 const RiderSchema = new mongoose.Schema(
-
   {
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
       unique: true,
-    },
-
-    roles: {
-      type: [String],
-      enum: ["customer", "rider", "vendor", "admin"],
-      default: ["customer"],
-    },
-
-    activeRole: {
-      type: String,
-      enum: ["customer", "rider", "vendor", "admin"],
-      default: "customer",
     },
 
     vehicleType: {
@@ -40,6 +27,8 @@ const RiderSchema = new mongoose.Schema(
 
     totalDeliveries: { type: Number, default: 0 },
 
+    // ✅ coordinates required — no empty array allowed
+    // Rider must send location before geo queries work
     currentLocation: {
       type: {
         type: String,
@@ -48,6 +37,7 @@ const RiderSchema = new mongoose.Schema(
       },
       coordinates: {
         type: [Number], // [lng, lat]
+        default: undefined, // ✅ prevents empty [] being saved
       },
     },
 
@@ -60,14 +50,12 @@ const RiderSchema = new mongoose.Schema(
     },
 
     lastActiveAt: Date,
-
   },
-
   { timestamps: true }
-
 );
 
-RiderSchema.index({ currentLocation: "2dsphere" });
+// Sparse so riders without coordinates are excluded from geo index
+// instead of causing index errors
+RiderSchema.index({ currentLocation: "2dsphere" }, { sparse: true });
 
 module.exports = mongoose.model("Rider", RiderSchema);
-
