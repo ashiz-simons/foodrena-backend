@@ -132,16 +132,21 @@ exports.initiatePayment = async (req, res) => {
 exports.verifyPayment = async (req, res) => {
   try {
     const reference = req.params.reference;
+    console.log("🔍 VERIFY CALLED — reference:", reference);
+
     const userId = req.user._id; // ✅ auth required now
 
     // 1. Extract orderId from reference
     const orderId = reference.split('_')[1];
+    console.log("🔍 ORDER ID extracted:", orderId);
     if (!orderId) {
       return res.status(400).json({ message: 'Invalid reference' });
     }
 
     // 2. Find order and confirm it belongs to this user
     const order = await Order.findOne({ _id: orderId, user: userId });
+    console.log("🔍 ORDER FOUND:", order?._id, "| ref match:", order?.reference === reference);
+
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
     }
@@ -164,7 +169,8 @@ exports.verifyPayment = async (req, res) => {
 
     // 5. Ask Paystack directly — source of truth
     const result = await verifyTransaction(reference);
-
+     console.log("🔍 PAYSTACK RESULT:", JSON.stringify(result?.data?.status));
+     
     if (!result?.data || result.data.status !== 'success') {
       return res.status(402).json({ message: 'Payment not completed yet' });
     }
