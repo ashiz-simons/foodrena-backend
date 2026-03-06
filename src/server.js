@@ -12,6 +12,7 @@ const { Server } = require("socket.io");
 const connectDB = require('./config/db');
 const config = require('./config');
 const errorHandler = require('./middleware/errorHandler');
+const ensureIndexes = require('./utils/ensureIndexes'); // ✅ added
 
 const authRoutes = require('./routes/auth');
 const vendorRoutes = require('./routes/vendors');
@@ -34,26 +35,14 @@ const unlockEarnings = require('./jobs/unlockEarnings');
 
 const app = express();
 
-/**
- * =======================
- * GLOBAL MIDDLEWARE
- * =======================
- */
 app.use(helmet());
 app.use(cors());
-
-// JSON parser (SAFE — webhook handled in route)
 app.use(express.json());
 
 if (process.env.NODE_ENV !== 'production') {
   app.use(morgan('dev'));
 }
 
-/**
- * =======================
- * ROUTES
- * =======================
- */
 app.use('/api/auth', authRoutes);
 app.use('/api/vendors', vendorRoutes);
 app.use('/api/orders', orderRoutes);
@@ -70,40 +59,19 @@ app.use("/api/admin/earnings", require("./routes/adminEarnings.routes"));
 app.use("/api/admin/withdrawals", require("./routes/adminWithdrawals.routes"));
 app.use("/api/admin/orders", require("./routes/adminOrders.routes"));
 app.use('/api/riders', require('./routes/riderRoutes'));
-// app.use("/api/rider/withdrawals", require("./routes/riderWithdrawals.routes"));
 app.use("/api/admin/rider-withdrawals", require("./routes/adminRiderWithdrawals.routes"));
 app.use('/api/vendor-wallet', require('./routes/vendorWallet'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/upload', uploadRoutes);
-/**
- * =======================
- * HEALTH
- * =======================
- */
+
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, time: new Date() });
 });
 
-
-/**
- * =======================
- * ERROR HANDLER (LAST)
- * =======================
- */
 app.use(errorHandler);
 
-/**
- * =======================
- * BACKGROUND JOBS
- * =======================
- */
 setInterval(unlockEarnings, 5 * 60 * 1000);
 
-/**
- * =======================
- * SOCKET.IO SETUP
- * =======================
- */
 const server = http.createServer(app);
 
 const io = new Server(server, {
@@ -113,7 +81,6 @@ const io = new Server(server, {
   }
 });
 
-// Make io globally accessible
 global.io = io;
 
 io.on("connection", (socket) => {
@@ -124,7 +91,6 @@ io.on("connection", (socket) => {
     console.log(`📡 Joined room: ${room}`);
   });
 
-  // Attach rider tracking listener
   riderTrackingSocket(io, socket);
 
   socket.on("disconnect", () => {
@@ -132,16 +98,11 @@ io.on("connection", (socket) => {
   });
 });
 
-
-/**
- * =======================
- * START SERVER
- * =======================
- */
 const PORT = config.port || 4000;
 
 connectDB(config.mongoUri)
-  .then(() => {
+  .then(async () => {
+    await ensureIndexes(); // ✅ recreates 2dsphere indexes after any db wipe
     server.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 API + Socket.IO running on port ${PORT}`);
       startKeepAlive();
