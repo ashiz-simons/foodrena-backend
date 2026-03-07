@@ -9,13 +9,8 @@ const {
   verifyTransaction
 } = require('../services/payments/paystack');
 
-const ORDER_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
+const ORDER_EXPIRY_MS = 30 * 60 * 1000;
 
-/**
- * ============================
- * HELPERS
- * ============================
- */
 function isExpired(order) {
   return (
     order.paymentStatus === 'unpaid' &&
@@ -23,19 +18,11 @@ function isExpired(order) {
   );
 }
 
-/**
- * ============================
- * CREATE EARNING (IDEMPOTENT)
- * ============================
- */
 async function createEarning(order) {
   const exists = await Earning.findOne({ order: order._id });
-  if (exists) {
-    return exists;
-  }
+  if (exists) return exists;
 
   const PLATFORM_RATE = 0.10;
-
   const platformFee = Math.round(order.subtotal * PLATFORM_RATE);
   const vendorNet = order.subtotal - platformFee;
 
@@ -56,13 +43,8 @@ async function createEarning(order) {
   });
 
   let wallet = await Wallet.findOne({ vendor: order.vendor });
-
   if (!wallet) {
-    wallet = await Wallet.create({
-      vendor: order.vendor,
-      balance: 0,
-      pendingBalance: 0
-    });
+    wallet = await Wallet.create({ vendor: order.vendor, balance: 0, pendingBalance: 0 });
   }
 
   wallet.pendingBalance += vendorNet;
@@ -70,10 +52,11 @@ async function createEarning(order) {
 
   return earning;
 }
+
 /**
- * ============================
+ * =======================
  * INITIATE PAYMENT
- * ============================
+ * =======================
  */
 exports.initiatePayment = async (req, res) => {
   try {
@@ -82,9 +65,7 @@ exports.initiatePayment = async (req, res) => {
       user: req.user._id
     });
 
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
+    if (!order) return res.status(404).json({ message: 'Order not found' });
 
     if (isExpired(order)) {
       order.status = 'cancelled';
@@ -96,8 +77,6 @@ exports.initiatePayment = async (req, res) => {
       return res.status(400).json({ message: 'Order already paid' });
     }
 
-    // ✅ Reuse existing reference if already generated
-    // This ensures verify always matches what's stored on the order
     const reference = order.reference || `FR_${order._id}_${Date.now()}`;
 
     const paystackResponse = await initializeTransaction({
@@ -107,7 +86,6 @@ exports.initiatePayment = async (req, res) => {
       callback_url: `${process.env.APP_BASE_URL}/payment/success?status=success&reference=${reference}`,
     });
 
-    // Only save if reference is new
     if (!order.reference) {
       order.paymentProvider = 'paystack';
       order.reference = reference;
@@ -126,39 +104,31 @@ exports.initiatePayment = async (req, res) => {
 };
 
 /**
- * ============================
+ * =======================
  * VERIFY PAYMENT (CLIENT)
- * ============================
+ * =======================
  */
 exports.verifyPayment = async (req, res) => {
   try {
     const reference = req.params.reference;
     console.log("🔍 VERIFY CALLED — reference:", reference);
 
-    const userId = req.user._id; // ✅ auth required now
-
-    // 1. Extract orderId from reference
+    const userId = req.user._id;
     const orderId = reference.split('_')[1];
     console.log("🔍 ORDER ID extracted:", orderId);
-    if (!orderId) {
-      return res.status(400).json({ message: 'Invalid reference' });
-    }
 
-    // 2. Find order and confirm it belongs to this user
+    if (!orderId) return res.status(400).json({ message: 'Invalid reference' });
+
     const order = await Order.findOne({ _id: orderId, user: userId });
     console.log("🔍 ORDER FOUND:", order?._id, "| ref match:", order?.reference === reference);
-    console.log("🔍 STORED REFERENCE:", order?.reference); // 👈 add this
+    console.log("🔍 STORED REFERENCE:", order?.reference);
 
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
+    if (!order) return res.status(404).json({ message: 'Order not found' });
 
-    // 3. Confirm reference matches what we stored
     if (order.reference !== reference) {
       return res.status(400).json({ message: 'Reference mismatch' });
     }
 
-    // 4. Already paid — just return success so frontend can navigate
     if (order.paymentStatus === 'paid') {
       return res.json({ message: 'Payment verified', status: 'paid' });
     }
@@ -169,35 +139,46 @@ exports.verifyPayment = async (req, res) => {
       return res.status(400).json({ message: 'Order expired' });
     }
 
-    // 5. Ask Paystack directly — source of truth
     const result = await verifyTransaction(reference);
-     console.log("🔍 PAYSTACK RESULT:", JSON.stringify(result?.data?.status));
+    console.log("🔍 PAYSTACK RESULT:", JSON.stringify(result?.data?.status));
 
     if (!result?.data || result.data.status !== 'success') {
       return res.status(402).json({ message: 'Payment not completed yet' });
     }
 
-    // 6. Atomic update — prevent race with webhook
+    // ✅ After payment: move to "accepted" so vendor sees and accepts the order
+    // Vendor then marks "preparing" → "searching_rider" which triggers rider matching
     const updated = await Order.findOneAndUpdate(
       { _id: orderId, paymentStatus: { $ne: 'paid' } },
       {
         $set: {
           paymentStatus: 'paid',
-          status: 'searching_rider',
+          status: 'accepted',  // ✅ was 'searching_rider' — now waits for vendor
           paidAt: new Date(),
         },
       },
       { new: true }
     );
 
-    // Webhook already handled it — still a success for the user
     if (!updated) {
       return res.json({ message: 'Payment verified', status: 'paid' });
     }
 
-    const { assignRiderToOrder } = require('../services/riderMatching');
     await createEarning(updated);
-    await assignRiderToOrder(updated._id);
+
+    // ✅ Notify vendor via socket so they see the new order immediately
+    global.io?.to(`vendor_${updated.vendor}`).emit("new_order", {
+      orderId: updated._id,
+      status: 'accepted',
+      total: updated.total,
+      items: updated.items,
+    });
+
+    // Notify customer
+    global.io?.to(`order_${updated._id}`).emit("order_status_update", {
+      orderId: updated._id,
+      status: 'accepted',
+    });
 
     return res.json({ message: 'Payment verified', status: 'paid' });
 
@@ -208,9 +189,9 @@ exports.verifyPayment = async (req, res) => {
 };
 
 /**
- * ============================
- * PAYSTACK WEBHOOK (CHARGE SUCCESS)
- * ============================
+ * =======================
+ * PAYSTACK WEBHOOK
+ * =======================
  */
 exports.paystackWebhook = async (req, res) => {
   try {
@@ -221,32 +202,36 @@ exports.paystackWebhook = async (req, res) => {
       .update(req.body)
       .digest('hex');
 
-    if (hash !== signature) {
-      return res.sendStatus(401);
-    }
+    if (hash !== signature) return res.sendStatus(401);
 
     const event = req.body;
-    if (event.event !== 'charge.success') {
-      return res.sendStatus(200);
-    }
+    if (event.event !== 'charge.success') return res.sendStatus(200);
 
     const reference = event.data.reference;
     const orderId = reference.split('_')[1];
 
     const order = await Order.findById(orderId);
-    if (!order || order.paymentStatus === 'paid') {
-      return res.sendStatus(200);
-    }
+    if (!order || order.paymentStatus === 'paid') return res.sendStatus(200);
 
-    const { assignRiderToOrder } = require('../services/riderMatching');
-
+    // ✅ Same fix in webhook — move to accepted not searching_rider
     order.paymentStatus = 'paid';
-    order.status = 'searching_rider';
+    order.status = 'accepted';
     order.paidAt = new Date();
     await order.save();
 
     await createEarning(order);
-    await assignRiderToOrder(order._id);
+
+    global.io?.to(`vendor_${order.vendor}`).emit("new_order", {
+      orderId: order._id,
+      status: 'accepted',
+      total: order.total,
+      items: order.items,
+    });
+
+    global.io?.to(`order_${order._id}`).emit("order_status_update", {
+      orderId: order._id,
+      status: 'accepted',
+    });
 
     return res.sendStatus(200);
 
@@ -257,9 +242,9 @@ exports.paystackWebhook = async (req, res) => {
 };
 
 /**
- * ============================
+ * =======================
  * PAYSTACK TRANSFER WEBHOOK
- * ============================
+ * =======================
  */
 exports.paystackTransferWebhook = async (req, res) => {
   try {
@@ -270,22 +255,16 @@ exports.paystackTransferWebhook = async (req, res) => {
       .update(JSON.stringify(req.body))
       .digest('hex');
 
-    if (hash !== signature) {
-      return res.sendStatus(401);
-    }
+    if (hash !== signature) return res.sendStatus(401);
 
     const event = req.body;
-    if (!event.event.startsWith('transfer.')) {
-      return res.sendStatus(200);
-    }
+    if (!event.event.startsWith('transfer.')) return res.sendStatus(200);
 
     const Withdrawal = require('../models/Withdrawal');
-
     const reference = event.data.reference;
     const withdrawal = await Withdrawal.findOne({ reference });
-    if (!withdrawal || withdrawal.status === 'paid') {
-      return res.sendStatus(200);
-    }
+
+    if (!withdrawal || withdrawal.status === 'paid') return res.sendStatus(200);
 
     if (event.event === 'transfer.success') {
       withdrawal.status = 'paid';
@@ -300,7 +279,6 @@ exports.paystackTransferWebhook = async (req, res) => {
 
       const wallet = await Wallet.findById(withdrawal.wallet);
       if (wallet) {
-        // ✅ CORRECT REVERSAL
         wallet.pendingBalance -= withdrawal.amount;
         wallet.balance += withdrawal.amount;
         await wallet.save();
