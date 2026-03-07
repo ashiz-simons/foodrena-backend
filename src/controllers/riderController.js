@@ -4,6 +4,7 @@ const RiderWallet = require("../models/RiderWallet");
 const RiderEarning = require("../models/RiderEarning");
 const RiderTransaction = require("../models/RiderTransaction");
 const cloudinary = require("../config/cloudinary");
+const { notifyCustomer } = require("../utils/notifyHelpers"); // ✅
 
 exports.createRider = async (req, res) => {
   try {
@@ -271,9 +272,17 @@ exports.completeDelivery = async (req, res) => {
     });
     console.log(`✅ Rider ${riderId} freed up after delivery`);
 
+    // Socket notify
     global.io?.to(`order_${order._id}`).emit("order_status_update", {
       orderId: order._id,
       status: "delivered",
+    });
+
+    // ✅ Push notify customer — order delivered
+    await notifyCustomer(order.user, {
+      title: "✅ Order Delivered!",
+      body: "Your order has been delivered. Enjoy your meal! 🍽️",
+      orderId: order._id,
     });
 
     res.json({ message: "Delivery completed & payout recorded", order: lockedOrder });

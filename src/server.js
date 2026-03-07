@@ -63,6 +63,7 @@ app.use("/api/admin/rider-withdrawals", require("./routes/adminRiderWithdrawals.
 app.use('/api/vendor-wallet', require('./routes/vendorWallet'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/upload', uploadRoutes);
+app.use('/api/users', require('./routes/fcmTokenRoute'));
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, time: new Date() });

@@ -1,0 +1,70 @@
+/**
+ * utils/notifyHelpers.js
+ * Convenience functions for sending push notifications to users by role.
+ * Import this anywhere you need to send a notification.
+ */
+
+const { sendNotification } = require("./fcmService");
+const User = require("../models/User");
+const Vendor = require("../models/Vendor");
+const Rider = require("../models/Rider");
+
+/**
+ * Notify a customer about their order status
+ */
+async function notifyCustomer(userId, { title, body, orderId }) {
+  try {
+    const user = await User.findById(userId).select("fcmToken");
+    if (user?.fcmToken) {
+      await sendNotification(user.fcmToken, {
+        title,
+        body,
+        data: { type: "order_status", orderId: String(orderId) },
+      });
+    }
+  } catch (e) {
+    console.warn("notifyCustomer failed:", e.message);
+  }
+}
+
+/**
+ * Notify a vendor about a new or updated order
+ */
+async function notifyVendor(vendorId, { title, body, orderId }) {
+  try {
+    const vendor = await Vendor.findById(vendorId).select("owner");
+    if (!vendor) return;
+    const user = await User.findById(vendor.owner).select("fcmToken");
+    if (user?.fcmToken) {
+      await sendNotification(user.fcmToken, {
+        title,
+        body,
+        data: { type: "new_order", orderId: String(orderId) },
+      });
+    }
+  } catch (e) {
+    console.warn("notifyVendor failed:", e.message);
+  }
+}
+
+/**
+ * Notify a rider about a new order assignment
+ */
+async function notifyRider(riderId, { title, body, orderId }) {
+  try {
+    const rider = await Rider.findById(riderId).select("user");
+    if (!rider) return;
+    const user = await User.findById(rider.user).select("fcmToken");
+    if (user?.fcmToken) {
+      await sendNotification(user.fcmToken, {
+        title,
+        body,
+        data: { type: "new_order", orderId: String(orderId) },
+      });
+    }
+  } catch (e) {
+    console.warn("notifyRider failed:", e.message);
+  }
+}
+
+module.exports = { notifyCustomer, notifyVendor, notifyRider };

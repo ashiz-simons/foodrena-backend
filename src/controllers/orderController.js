@@ -6,6 +6,7 @@ const { refundTransaction } = require('../services/payments/paystack');
 const Earning = require('../models/Earning');
 const Wallet = require('../models/Wallet');
 const finalizeOrderSettlement = require("../services/finalizeOrderSettlement");
+const { notifyCustomer } = require('../utils/notifyHelpers'); // ✅
 
 async function safeFinalizeSettlement(orderId) {
   try {
@@ -27,6 +28,19 @@ const ALLOWED_TRANSITIONS = {
   arrived_at_pickup: ['picked_up'],
   picked_up: ['on_the_way'],
   on_the_way: ['delivered'],
+};
+
+// Push notification messages per status change
+const STATUS_MESSAGES = {
+  accepted:         { title: '✅ Order Accepted!',        body: 'Your order has been accepted by the vendor and is being prepared.' },
+  preparing:        { title: '👨‍🍳 Order Being Prepared',  body: 'The vendor is now preparing your order.' },
+  searching_rider:  { title: '🔍 Finding a Rider',        body: 'We are looking for a rider to deliver your order.' },
+  rider_assigned:   { title: '🛵 Rider Assigned!',        body: 'A rider has been assigned to your order and is heading to pick it up.' },
+  arrived_at_pickup:{ title: '📍 Rider at Vendor',        body: 'Your rider has arrived at the restaurant to pick up your order.' },
+  picked_up:        { title: '🎁 Order Picked Up',        body: 'Your order has been picked up and is on its way!' },
+  on_the_way:       { title: '🚀 On The Way!',            body: 'Your rider is on the way to deliver your order.' },
+  delivered:        { title: '✅ Order Delivered!',       body: 'Your order has been delivered. Enjoy your meal! 🍽️' },
+  cancelled:        { title: '❌ Order Cancelled',        body: 'Your order was cancelled. A refund will be processed if payment was made.' },
 };
 
 async function publish(event, payload) {
@@ -114,6 +128,14 @@ async function expireIfVendorLate(order) {
     order.cancelledAt = new Date();
     await order.save();
     await refundOrderIfNeeded(order, 'Vendor did not accept in time');
+
+    // ✅ Push notify customer — vendor timed out
+    await notifyCustomer(order.user, {
+      title: '❌ Order Cancelled',
+      body: 'The vendor did not accept your order in time. A refund has been initiated.',
+      orderId: order._id,
+    });
+
     await publish('order.cancelled', { orderId: order._id, reason: 'vendor_timeout' });
     return true;
   }
@@ -188,8 +210,6 @@ exports.createOrder = async (req, res) => {
     const deliveryFee = 500;
     const total = subtotal + deliveryFee;
 
-    // ✅ Extract lat/lng from vendor's GeoJSON coordinates
-    // vendor.location = { type: "Point", coordinates: [lng, lat] }
     const [vendorLng, vendorLat] = vendor.location.coordinates;
 
     const order = await Order.create({
@@ -200,15 +220,11 @@ exports.createOrder = async (req, res) => {
       deliveryFee,
       total,
       deliveryAddress,
-
-      // ✅ Store as {lat, lng} to match Order model schema
-      // riderMatching.js reads this correctly now
       pickupLocation: {
         lat: vendorLat,
         lng: vendorLng,
         address: vendor.address?.street || "",
       },
-
       zone: vendor.zone,
       status: 'pending',
       assignmentAttempts: 0
@@ -324,18 +340,15 @@ exports.updateOrderStatus = async (req, res) => {
     if (status === 'delivered') {
       order.deliveredAt = new Date();
 
-      // ✅ Free up the rider so they can take new orders
       if (order.rider) {
         const Rider = require('../models/Rider');
         await Rider.findByIdAndUpdate(order.rider, {
           isAvailable: true,
           lastActiveAt: new Date(),
         });
-        console.log(`✅ Rider ${order.rider} freed up after delivery`);
       }
 
       const earning = await Earning.findOne({ order: order._id });
-
       if (earning && earning.status === 'pending') {
         earning.status = 'available';
         await earning.save();
@@ -352,14 +365,23 @@ exports.updateOrderStatus = async (req, res) => {
     }
 
     await order.save();
-
     await publish('order.status.updated', { orderId: order._id, status });
 
-    // ✅ Also notify via socket so customers see status update in real time
+    // Socket notify customer in real time
     global.io?.to(`order_${order._id}`).emit("order_status_update", {
       orderId: order._id,
       status,
     });
+
+    // ✅ Push notify customer for every status change
+    const msg = STATUS_MESSAGES[status];
+    if (msg) {
+      await notifyCustomer(order.user, {
+        title: msg.title,
+        body: msg.body,
+        orderId: order._id,
+      });
+    }
 
     res.json({ message: 'Order status updated', order });
 

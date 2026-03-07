@@ -1,12 +1,12 @@
 const Rider = require("../models/Rider");
 const Order = require("../models/Order");
+const { notifyRider, notifyCustomer } = require("../utils/notifyHelpers"); // ✅
 
 const MAX_ASSIGNMENT_ATTEMPTS = 5;
-const RESPONSE_TIMEOUT_MS = 30 * 1000;       // 30s per rider
-const MAX_SEARCH_DURATION_MS = 30 * 60 * 1000; // 30 min total
-const RETRY_INTERVAL_MS = 60 * 1000;          // retry every 60s
+const RESPONSE_TIMEOUT_MS = 30 * 1000;
+const MAX_SEARCH_DURATION_MS = 30 * 60 * 1000;
+const RETRY_INTERVAL_MS = 60 * 1000;
 
-// ─── Haversine distance (fallback sort) ──────────────
 function getDistanceKm(lat1, lng1, lat2, lng2) {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -69,7 +69,7 @@ async function findEligibleRiders(order) {
     });
 
     if (nearbyRiders.length > 0) {
-      console.log(`📍 Found ${nearbyRiders.length} riders within 10km of vendor`);
+      console.log(`📍 Found ${nearbyRiders.length} riders within 10km`);
       return nearbyRiders;
     }
 
@@ -112,6 +112,7 @@ async function tryAssignRider(order, rider) {
 
   console.log(`📡 Notifying rider ${rider._id} of order ${order._id}`);
 
+  // Socket notification (real-time if app is open)
   global.io?.to(`rider_${rider._id}`).emit("new_order", {
     orderId: updated._id,
     pickupLocation: updated.pickupLocation,
@@ -119,6 +120,13 @@ async function tryAssignRider(order, rider) {
     items: updated.items,
     total: updated.total,
     deliveryFee: updated.deliveryFee,
+  });
+
+  // ✅ Push notification (works even if app is closed)
+  await notifyRider(rider._id, {
+    title: "🛵 New Delivery Request!",
+    body: `New order to deliver. ₦${updated.deliveryFee} delivery fee. Tap to view.`,
+    orderId: updated._id,
   });
 
   return new Promise(resolve => {
@@ -133,6 +141,10 @@ async function tryAssignRider(order, rider) {
           { _id: order._id, status: "rider_assigned", rider: rider._id },
           { $set: { rider: null, status: "searching_rider" } }
         );
+
+        // ✅ Free up the rider when they time out
+        await Rider.findByIdAndUpdate(rider._id, { isAvailable: true });
+
         resolve(false);
       } catch (err) {
         console.error("tryAssignRider error:", err.message);
@@ -142,7 +154,6 @@ async function tryAssignRider(order, rider) {
   });
 }
 
-// ─── Cancel order and refund customer ────────────────
 async function cancelWithRefund(order, reason) {
   try {
     order.status = "cancelled";
@@ -150,15 +161,12 @@ async function cancelWithRefund(order, reason) {
     order.refundReason = reason;
     await order.save();
 
-    // Trigger refund if paid
     if (order.paymentStatus === "paid" && order.refundStatus === "none") {
-      
-      // Use the same safe refund helper from orderController
       order.refundStatus = "pending";
       await order.save();
       try {
         const { refundTransaction } = require("./payments/paystack");
-      await refundTransaction(order.reference);
+        await refundTransaction(order.reference);
       } catch (refundErr) {
         console.error("❌ Refund failed:", refundErr.message);
         order.refundStatus = "failed";
@@ -166,10 +174,18 @@ async function cancelWithRefund(order, reason) {
       }
     }
 
+    // Socket notify
     global.io?.to(`order_${order._id}`).emit("order_status_update", {
       orderId: order._id,
       status: "cancelled",
       reason,
+    });
+
+    // ✅ Push notify customer — order cancelled after no rider found
+    await notifyCustomer(order.user, {
+      title: "❌ Order Cancelled",
+      body: "We couldn't find a rider for your order. A refund has been initiated.",
+      orderId: order._id,
     });
 
     console.log(`🚫 Order ${order._id} cancelled — ${reason}`);
@@ -178,10 +194,8 @@ async function cancelWithRefund(order, reason) {
   }
 }
 
-// ─── Main entry point ─────────────────────────────────
 exports.assignRiderToOrder = async (orderId, searchStartedAt) => {
   try {
-    // ✅ Track when we first started searching
     const startedAt = searchStartedAt || Date.now();
     const elapsed = Date.now() - startedAt;
 
@@ -197,9 +211,8 @@ exports.assignRiderToOrder = async (orderId, searchStartedAt) => {
       return null;
     }
 
-    // ✅ Give up after 30 minutes and refund
     if (elapsed >= MAX_SEARCH_DURATION_MS) {
-      console.warn(`⏰ Order ${orderId} — no rider found after 30 minutes, refunding customer`);
+      console.warn(`⏰ Order ${orderId} — no rider found after 30 minutes, refunding`);
       await cancelWithRefund(order, "No riders available after 30 minutes");
       return null;
     }
@@ -210,8 +223,7 @@ exports.assignRiderToOrder = async (orderId, searchStartedAt) => {
     }
 
     if (order.assignmentAttempts >= MAX_ASSIGNMENT_ATTEMPTS) {
-      // Don't cancel yet — reset attempts and keep searching until 30 min
-      console.warn(`⚠️ Order ${orderId} hit max attempts — resetting counter and retrying`);
+      console.warn(`⚠️ Order ${orderId} hit max attempts — resetting counter`);
       await Order.findByIdAndUpdate(orderId, { $set: { assignmentAttempts: 0 } });
     }
 
@@ -224,10 +236,7 @@ exports.assignRiderToOrder = async (orderId, searchStartedAt) => {
       console.warn(`No eligible riders for order ${orderId} — retrying in ${Math.round(retryIn / 1000)}s`);
 
       if (retryIn > 0) {
-        setTimeout(
-          () => exports.assignRiderToOrder(orderId, startedAt),
-          retryIn
-        );
+        setTimeout(() => exports.assignRiderToOrder(orderId, startedAt), retryIn);
       } else {
         await cancelWithRefund(order, "No riders available after 30 minutes");
       }
@@ -248,7 +257,6 @@ exports.assignRiderToOrder = async (orderId, searchStartedAt) => {
       }
     }
 
-    // All riders declined — retry with time tracking
     const remainingMs = MAX_SEARCH_DURATION_MS - elapsed;
     if (remainingMs > 0) {
       console.log(`🔄 All riders declined order ${orderId} — retrying`);

@@ -6,9 +6,7 @@ const securityQuestionSchema = new mongoose.Schema({
   answerHash: { type: String, required: true },
 });
 
-
 const userSchema = new mongoose.Schema(
-
   {
     name: { type: String, required: true },
 
@@ -43,7 +41,6 @@ const userSchema = new mongoose.Schema(
         required: true,
         default: "Point",
       },
-
       coordinates: {
         type: [Number], // [lng, lat]
         required: true,
@@ -69,6 +66,12 @@ const userSchema = new mongoose.Schema(
 
     resetToken: String,
     resetTokenExpires: Date,
+
+    // ✅ FCM push notification token — saved by Flutter after login
+    fcmToken: {
+      type: String,
+      default: null,
+    },
   },
   { timestamps: true }
 );
