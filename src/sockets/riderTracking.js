@@ -9,10 +9,11 @@ module.exports = (io, socket) => {
     try {
       if (!riderId) return;
 
-      await Rider.findOneAndUpdate(
-        { _id: riderId, isActive: true },
-        { isAvailable: true, lastSeen: new Date() }
-      );
+      await Rider.findByIdAndUpdate(riderId, {
+        isActive: true,
+        isAvailable: true, // ✅ always reset to available when coming online
+        lastActiveAt: new Date(),
+      });
 
       socket.join(`rider_${riderId}`);
       console.log("🟢 Rider online:", riderId);
@@ -28,45 +29,30 @@ module.exports = (io, socket) => {
   });
 
   // ─── Rider sends live GPS update ──────────────────────
-  // Flutter emits: { riderId, lat, lng }
   socket.on("rider_location_update", async ({ riderId, lat, lng }) => {
     try {
       if (!riderId || lat === undefined || lng === undefined) return;
 
-      // Save as proper GeoJSON so $nearSphere queries work
-      const rider = await Rider.findByIdAndUpdate(
-        riderId,
-        {
-          currentLocation: {
-            type: "Point",
-            coordinates: [lng, lat], // GeoJSON is [lng, lat]
-          },
-          lastActiveAt: new Date(),
+      await Rider.findByIdAndUpdate(riderId, {
+        currentLocation: {
+          type: "Point",
+          coordinates: [lng, lat],
         },
-        { new: true }
-      );
+        lastActiveAt: new Date(),
+      });
 
-      if (!rider) return;
-
-      // Find active order for this rider
       const activeOrder = await Order.findOne({
         rider: riderId,
         status: { $in: ["rider_assigned", "arrived_at_pickup", "picked_up", "on_the_way"] },
       });
 
       // Broadcast to admin dashboard
-      io.emit("rider_location_update", {
-        riderId,
-        lat,
-        lng,
-        updatedAt: new Date(),
-      });
+      io.emit("rider_location_update", { riderId, lat, lng, updatedAt: new Date() });
 
       // Echo back to rider's own room
       io.to(`rider_${riderId}`).emit("rider_location_update", { lat, lng });
 
-      // ✅ Emit to the customer's order room as "rider_live_location"
-      // OrderStatusScreen listens for this event
+      // Emit to customer's order room
       if (activeOrder) {
         io.to(`order_${activeOrder._id}`).emit("rider_live_location", {
           riderId,
@@ -87,7 +73,8 @@ module.exports = (io, socket) => {
       if (!riderId) return;
       await Rider.findByIdAndUpdate(riderId, {
         isAvailable: false,
-        lastSeen: new Date(),
+        isActive: false,
+        lastActiveAt: new Date(),
       });
       console.log("🔴 Rider offline:", riderId);
     } catch (err) {

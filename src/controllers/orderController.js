@@ -324,6 +324,16 @@ exports.updateOrderStatus = async (req, res) => {
     if (status === 'delivered') {
       order.deliveredAt = new Date();
 
+      // ✅ Free up the rider so they can take new orders
+      if (order.rider) {
+        const Rider = require('../models/Rider');
+        await Rider.findByIdAndUpdate(order.rider, {
+          isAvailable: true,
+          lastActiveAt: new Date(),
+        });
+        console.log(`✅ Rider ${order.rider} freed up after delivery`);
+      }
+
       const earning = await Earning.findOne({ order: order._id });
 
       if (earning && earning.status === 'pending') {
