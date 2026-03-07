@@ -236,9 +236,9 @@ exports.getMyVendorProfile = async (req, res) => {
 
 exports.completeOnboarding = async (req, res) => {
   try {
-    const { businessName, street, city, state, country, bankName, accountNumber, accountName, zone } = req.body;
+    const { businessName, street, city, state, country, bankName, accountNumber, accountName } = req.body;
 
-    if (!businessName || !street || !city || !zone || !bankName || !accountNumber) {
+    if (!businessName || !street || !city || !bankName || !accountNumber) {
       return res.status(400).json({ message: "All fields required" });
     }
 
@@ -248,7 +248,6 @@ exports.completeOnboarding = async (req, res) => {
     vendor.businessName = businessName;
     vendor.address = { street, city, state, country };
     vendor.bank = { bankName, accountNumber, accountName };
-    vendor.zone = zone;
     vendor.status = "review";
     vendor.onboardingCompleted = true;
 

@@ -53,11 +53,6 @@ async function createEarning(order) {
   return earning;
 }
 
-/**
- * =======================
- * INITIATE PAYMENT
- * =======================
- */
 exports.initiatePayment = async (req, res) => {
   try {
     const order = await Order.findOne({
@@ -103,11 +98,6 @@ exports.initiatePayment = async (req, res) => {
   }
 };
 
-/**
- * =======================
- * VERIFY PAYMENT (CLIENT)
- * =======================
- */
 exports.verifyPayment = async (req, res) => {
   try {
     const reference = req.params.reference;
@@ -124,10 +114,7 @@ exports.verifyPayment = async (req, res) => {
     console.log("🔍 STORED REFERENCE:", order?.reference);
 
     if (!order) return res.status(404).json({ message: 'Order not found' });
-
-    if (order.reference !== reference) {
-      return res.status(400).json({ message: 'Reference mismatch' });
-    }
+    if (order.reference !== reference) return res.status(400).json({ message: 'Reference mismatch' });
 
     if (order.paymentStatus === 'paid') {
       return res.json({ message: 'Payment verified', status: 'paid' });
@@ -146,14 +133,14 @@ exports.verifyPayment = async (req, res) => {
       return res.status(402).json({ message: 'Payment not completed yet' });
     }
 
-    // ✅ After payment: move to "accepted" so vendor sees and accepts the order
-    // Vendor then marks "preparing" → "searching_rider" which triggers rider matching
+    // ✅ Status stays "pending" after payment so vendor must explicitly accept
+    // Flow: pending → (vendor accepts) → accepted → preparing → searching_rider
     const updated = await Order.findOneAndUpdate(
       { _id: orderId, paymentStatus: { $ne: 'paid' } },
       {
         $set: {
           paymentStatus: 'paid',
-          status: 'accepted',  // ✅ was 'searching_rider' — now waits for vendor
+          status: 'pending',
           paidAt: new Date(),
         },
       },
@@ -166,10 +153,10 @@ exports.verifyPayment = async (req, res) => {
 
     await createEarning(updated);
 
-    // ✅ Notify vendor via socket so they see the new order immediately
+    // Notify vendor of new order
     global.io?.to(`vendor_${updated.vendor}`).emit("new_order", {
       orderId: updated._id,
-      status: 'accepted',
+      status: 'pending',
       total: updated.total,
       items: updated.items,
     });
@@ -177,7 +164,7 @@ exports.verifyPayment = async (req, res) => {
     // Notify customer
     global.io?.to(`order_${updated._id}`).emit("order_status_update", {
       orderId: updated._id,
-      status: 'accepted',
+      status: 'pending',
     });
 
     return res.json({ message: 'Payment verified', status: 'paid' });
@@ -188,11 +175,6 @@ exports.verifyPayment = async (req, res) => {
   }
 };
 
-/**
- * =======================
- * PAYSTACK WEBHOOK
- * =======================
- */
 exports.paystackWebhook = async (req, res) => {
   try {
     const signature = req.headers['x-paystack-signature'];
@@ -213,9 +195,9 @@ exports.paystackWebhook = async (req, res) => {
     const order = await Order.findById(orderId);
     if (!order || order.paymentStatus === 'paid') return res.sendStatus(200);
 
-    // ✅ Same fix in webhook — move to accepted not searching_rider
+    // ✅ Same — pending so vendor must accept
     order.paymentStatus = 'paid';
-    order.status = 'accepted';
+    order.status = 'pending';
     order.paidAt = new Date();
     await order.save();
 
@@ -223,14 +205,14 @@ exports.paystackWebhook = async (req, res) => {
 
     global.io?.to(`vendor_${order.vendor}`).emit("new_order", {
       orderId: order._id,
-      status: 'accepted',
+      status: 'pending',
       total: order.total,
       items: order.items,
     });
 
     global.io?.to(`order_${order._id}`).emit("order_status_update", {
       orderId: order._id,
-      status: 'accepted',
+      status: 'pending',
     });
 
     return res.sendStatus(200);
@@ -241,11 +223,6 @@ exports.paystackWebhook = async (req, res) => {
   }
 };
 
-/**
- * =======================
- * PAYSTACK TRANSFER WEBHOOK
- * =======================
- */
 exports.paystackTransferWebhook = async (req, res) => {
   try {
     const signature = req.headers['x-paystack-signature'];
