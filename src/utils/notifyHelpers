@@ -4,7 +4,7 @@
  * Import this anywhere you need to send a notification.
  */
 
-const { sendNotification } = require("./fcmService");
+const { sendNotification } = require("../services/fcmService");
 const User = require("../models/User");
 const Vendor = require("../models/Vendor");
 const Rider = require("../models/Rider");
