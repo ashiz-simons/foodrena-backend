@@ -7,6 +7,7 @@ const Earning = require('../models/Earning');
 const Wallet = require('../models/Wallet');
 const finalizeOrderSettlement = require("../services/finalizeOrderSettlement");
 const { notifyCustomer } = require('../utils/notifyHelpers'); // ✅
+const { calculateDeliveryFee } = require('../utils/deliveryFee');
 
 async function safeFinalizeSettlement(orderId) {
   try {
@@ -150,7 +151,7 @@ async function expireIfVendorLate(order) {
 exports.createOrder = async (req, res) => {
   try {
     const userId = req.user._id;
-    const { vendorId, items, deliveryAddress } = req.body;
+    const { vendorId, items, deliveryAddress, deliveryLocation } = req.body;
 
     if (!items || !items.length) {
       return res.status(400).json({ message: 'Order items required' });
@@ -207,10 +208,20 @@ exports.createOrder = async (req, res) => {
       });
     }
 
-    const deliveryFee = 500;
-    const total = subtotal + deliveryFee;
-
     const [vendorLng, vendorLat] = vendor.location.coordinates;
+
+    // Calculate delivery fee based on distance
+    let deliveryFee = 500; // fallback if no location provided
+    let customerLat = null;
+    let customerLng = null;
+
+    if (deliveryLocation?.lat && deliveryLocation?.lng) {
+      customerLat = parseFloat(deliveryLocation.lat);
+      customerLng = parseFloat(deliveryLocation.lng);
+      deliveryFee = calculateDeliveryFee(vendorLat, vendorLng, customerLat, customerLng);
+    }
+
+    const total = subtotal + deliveryFee;
 
     const order = await Order.create({
       user: userId,
@@ -220,6 +231,10 @@ exports.createOrder = async (req, res) => {
       deliveryFee,
       total,
       deliveryAddress,
+      deliveryLocation: customerLat && customerLng ? {
+        type: 'Point',
+        coordinates: [customerLng, customerLat],
+      } : undefined,
       pickupLocation: {
         lat: vendorLat,
         lng: vendorLng,
