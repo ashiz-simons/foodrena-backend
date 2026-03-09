@@ -13,13 +13,15 @@ const userSchema = new mongoose.Schema(
     email: {
       type: String,
       unique: true,
+      sparse: true, // allows multiple null values
       lowercase: true,
-      required: true,
+      required: false,
     },
 
     phone: {
       type: String,
       required: true,
+      unique: true,
     },
 
     password: {
@@ -38,13 +40,17 @@ const userSchema = new mongoose.Schema(
       type: {
         type: String,
         enum: ["Point"],
-        required: true,
         default: "Point",
       },
       coordinates: {
-        type: [Number], // [lng, lat]
-        required: true,
+        type: [Number],
+        default: [0, 0],
       },
+    },
+
+    phoneVerified: {
+      type: Boolean,
+      default: false,
     },
 
     emailVerified: {
@@ -67,8 +73,17 @@ const userSchema = new mongoose.Schema(
     resetToken: String,
     resetTokenExpires: Date,
 
-    // ✅ FCM push notification token — saved by Flutter after login
     fcmToken: {
+      type: String,
+      default: null,
+    },
+
+    roles: {
+      type: [String],
+      default: [],
+    },
+
+    activeRole: {
       type: String,
       default: null,
     },

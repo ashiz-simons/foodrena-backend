@@ -5,50 +5,107 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { signToken } = require("../utils/jwt");
 const { sendEmail } = require("../services/notifications/email");
+const admin = require("../config/firebase"); // Firebase Admin SDK
+
+/* =========================
+   VERIFY FIREBASE PHONE OTP
+   Flutter sends the Firebase ID token after phone verification
+   Backend verifies it and marks phone as verified
+========================= */
+exports.verifyPhoneOtp = async (req, res) => {
+  try {
+    const { idToken, phone } = req.body;
+
+    if (!idToken || !phone) {
+      return res.status(400).json({ message: "idToken and phone required" });
+    }
+
+    // Verify the Firebase ID token
+    const decoded = await admin.auth().verifyIdToken(idToken);
+
+    // Firebase stores phone as decoded.phone_number
+    const firebasePhone = decoded.phone_number;
+
+    if (!firebasePhone) {
+      return res.status(400).json({ message: "Phone not found in token" });
+    }
+
+    // Normalize both numbers for comparison
+    const normalize = (p) => p.replace(/\s+/g, "").replace(/^\+/, "");
+    if (normalize(firebasePhone) !== normalize(phone)) {
+      return res.status(400).json({ message: "Phone number mismatch" });
+    }
+
+    res.json({ verified: true, phone: firebasePhone });
+  } catch (err) {
+    console.error("VERIFY PHONE OTP ERROR:", err);
+    res.status(400).json({ message: "Invalid or expired token" });
+  }
+};
 
 /* =========================
    REGISTER
 ========================= */
 exports.register = async (req, res) => {
   try {
-    const { name, email, password, role, phone, location } = req.body;
+    const { name, email, password, role, phone, location, idToken } = req.body;
 
-    if (!name || !email || !password || !phone || !location) {
+    if (!name || !password || !phone) {
       return res.status(400).json({
-        message: "Name, email, password, phone and location are required",
+        message: "Name, password and phone are required",
       });
     }
 
-    if (
-      !location.type ||
-      location.type !== "Point" ||
-      !Array.isArray(location.coordinates) ||
-      location.coordinates.length !== 2
-    ) {
-      return res.status(400).json({
-        message: "Invalid location format. Must be GeoJSON Point.",
-      });
+    // Verify Firebase phone token
+    if (!idToken) {
+      return res.status(400).json({ message: "Phone verification required" });
     }
 
-    const [lng, lat] = location.coordinates;
-    if (typeof lng !== "number" || typeof lat !== "number") {
-      return res.status(400).json({ message: "Coordinates must be numbers [lng, lat]" });
+    let firebasePhone;
+    try {
+      const decoded = await admin.auth().verifyIdToken(idToken);
+      firebasePhone = decoded.phone_number;
+      const normalize = (p) => p.replace(/\s+/g, "").replace(/^\+/, "");
+      if (!firebasePhone || normalize(firebasePhone) !== normalize(phone)) {
+        return res.status(400).json({ message: "Phone verification failed" });
+      }
+    } catch {
+      return res.status(400).json({ message: "Invalid phone verification token" });
     }
 
-    const exists = await User.findOne({ email });
-    if (exists) {
-      return res.status(400).json({ message: "Email already exists" });
+    // Check phone uniqueness
+    const phoneExists = await User.findOne({ phone });
+    if (phoneExists) {
+      return res.status(400).json({ message: "Phone number already registered" });
+    }
+
+    // Check email uniqueness if provided
+    if (email) {
+      const emailExists = await User.findOne({ email });
+      if (emailExists) {
+        return res.status(400).json({ message: "Email already registered" });
+      }
+    }
+
+    // Handle location — optional, default to [0,0]
+    let coords = [0, 0];
+    if (location?.coordinates?.length === 2) {
+      const [lng, lat] = location.coordinates;
+      if (typeof lng === "number" && typeof lat === "number") {
+        coords = [lng, lat];
+      }
     }
 
     const initialRole = role || "customer";
 
     const user = await User.create({
       name,
-      email,
+      email: email || undefined,
       password,
       role: initialRole,
       phone,
-      location: { type: "Point", coordinates: [lng, lat] },
+      phoneVerified: true,
+      location: { type: "Point", coordinates: coords },
     });
 
     let rider = null;
@@ -58,10 +115,7 @@ exports.register = async (req, res) => {
         user: user._id,
         isAvailable: false,
         isActive: true,
-        currentLocation: {
-          type: "Point",
-          coordinates: [lng, lat],
-        },
+        currentLocation: { type: "Point", coordinates: coords },
         lastActiveAt: new Date(),
       });
     }
@@ -70,25 +124,25 @@ exports.register = async (req, res) => {
       await Vendor.create({
         owner: user._id,
         phone: user.phone,
-        location: { type: "Point", coordinates: location.coordinates },
+        location: { type: "Point", coordinates: coords },
         status: "pending",
         isOpen: false,
       });
     }
 
-    const token = initialRole !== "admin"
-      ? signToken({ id: user._id, role: user.role })
-      : null;
+    const token = signToken({ id: user._id, role: user.role });
 
     res.status(201).json({
       user: {
-        id: user._id,
+        _id: user._id,
         name: user.name,
         email: user.email,
         role: user.role,
         phone: user.phone,
+        phoneVerified: true,
       },
       rider: rider ? {
+        _id: rider._id,
         id: rider._id,
         isAvailable: rider.isAvailable,
         isActive: rider.isActive,
@@ -104,13 +158,20 @@ exports.register = async (req, res) => {
 };
 
 /* =========================
-   LOGIN
+   LOGIN — phone or email
 ========================= */
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, phone, password } = req.body;
 
-    const user = await User.findOne({ email }).select("+password");
+    if (!email && !phone) {
+      return res.status(400).json({ message: "Phone or email required" });
+    }
+
+    // Find user by phone or email
+    const query = phone ? { phone } : { email: email.toLowerCase() };
+    const user = await User.findOne(query).select("+password");
+
     if (!user) return res.status(400).json({ message: "Invalid credentials" });
 
     const match = await user.matchPassword(password);
@@ -119,10 +180,8 @@ exports.login = async (req, res) => {
     const token = signToken({ id: user._id, role: user.role });
 
     let rider = null;
-
     if (user.role === "rider") {
       rider = await Rider.findOne({ user: user._id });
-
       if (!rider) {
         rider = await Rider.create({
           user: user._id,
@@ -134,18 +193,20 @@ exports.login = async (req, res) => {
           },
           lastActiveAt: new Date(),
         });
-        console.log("🆕 Auto-created rider profile:", rider._id);
       }
     }
 
     res.json({
       user: {
-        id: user._id,
+        _id: user._id,
         name: user.name,
         email: user.email,
         role: user.role,
+        phone: user.phone,
+        phoneVerified: user.phoneVerified,
       },
       rider: rider ? {
+        _id: rider._id,
         id: rider._id,
         isAvailable: rider.isAvailable,
         isActive: rider.isActive,
@@ -166,27 +227,27 @@ exports.login = async (req, res) => {
 exports.adminLogin = async (req, res) => {
   const { email, password } = req.body;
 
-  const admin = await User.findOne({ email, role: "admin" }).select("+password");
-  if (!admin) return res.status(401).json({ message: "Invalid credentials" });
+  const admin2 = await User.findOne({ email, role: "admin" }).select("+password");
+  if (!admin2) return res.status(401).json({ message: "Invalid credentials" });
 
-  if (!admin.emailVerified) return res.status(401).json({ message: "Email not verified" });
+  if (!admin2.emailVerified) return res.status(401).json({ message: "Email not verified" });
 
-  const match = await bcrypt.compare(password, admin.password);
+  const match = await bcrypt.compare(password, admin2.password);
   if (!match) return res.status(401).json({ message: "Invalid credentials" });
 
-  if (admin.twoFactorEnabled) {
+  if (admin2.twoFactorEnabled) {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    admin.otp = {
+    admin2.otp = {
       codeHash: await bcrypt.hash(otp, 10),
       expiresAt: Date.now() + 10 * 60 * 1000,
     };
-    await admin.save();
-    await sendEmail(admin.email, "Admin Login OTP", `<p>Your OTP is <b>${otp}</b>. Expires in 10 minutes.</p>`);
+    await admin2.save();
+    await sendEmail(admin2.email, "Admin Login OTP", `<p>Your OTP is <b>${otp}</b>. Expires in 10 minutes.</p>`);
     return res.json({ requiresOtp: true, message: "OTP sent" });
   }
 
-  const token = signToken({ id: admin._id, role: admin.role });
-  res.json({ token, user: { id: admin._id, email: admin.email, role: admin.role } });
+  const token = signToken({ id: admin2._id, role: admin2.role });
+  res.json({ token, user: { id: admin2._id, email: admin2.email, role: admin2.role } });
 };
 
 /* =========================
@@ -195,23 +256,23 @@ exports.adminLogin = async (req, res) => {
 exports.verifyAdminOtp = async (req, res) => {
   const { email, otp } = req.body;
 
-  const admin = await User.findOne({ email, role: "admin" }).select("+otp");
-  if (!admin || !admin.otp?.codeHash) return res.status(400).json({ message: "OTP not found" });
-  if (admin.otp.expiresAt < Date.now()) return res.status(400).json({ message: "OTP expired" });
+  const adminUser = await User.findOne({ email, role: "admin" }).select("+otp");
+  if (!adminUser || !adminUser.otp?.codeHash) return res.status(400).json({ message: "OTP not found" });
+  if (adminUser.otp.expiresAt < Date.now()) return res.status(400).json({ message: "OTP expired" });
 
-  const valid = await bcrypt.compare(otp, admin.otp.codeHash);
+  const valid = await bcrypt.compare(otp, adminUser.otp.codeHash);
   if (!valid) return res.status(400).json({ message: "Invalid OTP" });
 
-  admin.otp = undefined;
-  await admin.save();
+  adminUser.otp = undefined;
+  await adminUser.save();
 
   const token = jwt.sign(
-    { id: admin._id, role: "admin" },
+    { id: adminUser._id, role: "admin" },
     process.env.JWT_SECRET,
     { expiresIn: "1d" }
   );
 
-  res.json({ token, user: { id: admin._id, email: admin.email, role: admin.role } });
+  res.json({ token, user: { id: adminUser._id, email: adminUser.email, role: adminUser.role } });
 };
 
 /* =========================
@@ -225,30 +286,15 @@ exports.registerAdmin = async (req, res) => {
       return res.status(403).json({ message: "Invalid admin key" });
     }
 
-    if (!name || !email || !password || !phone || !location) {
-      return res.status(400).json({
-        message: "Name, email, password, phone and location are required",
-      });
-    }
-
-    if (
-      !location.type ||
-      location.type !== "Point" ||
-      !Array.isArray(location.coordinates) ||
-      location.coordinates.length !== 2
-    ) {
-      return res.status(400).json({ message: "Invalid location format. Must be GeoJSON Point." });
-    }
-
-    const [lng, lat] = location.coordinates;
-    if (typeof lng !== "number" || typeof lat !== "number") {
-      return res.status(400).json({ message: "Coordinates must be numbers [lng, lat]" });
+    if (!name || !email || !password || !phone) {
+      return res.status(400).json({ message: "Name, email, password and phone are required" });
     }
 
     const exists = await User.findOne({ email });
-    if (exists) {
-      return res.status(400).json({ message: "Email already exists" });
-    }
+    if (exists) return res.status(400).json({ message: "Email already exists" });
+
+    let coords = [0, 0];
+    if (location?.coordinates?.length === 2) coords = location.coordinates;
 
     let hashedQuestions = [];
     if (securityQuestions && Array.isArray(securityQuestions)) {
@@ -260,32 +306,20 @@ exports.registerAdmin = async (req, res) => {
       );
     }
 
-    const admin = await User.create({
-      name,
-      email,
-      password,
-      role: "admin",
-      phone,
-      location: { type: "Point", coordinates: [lng, lat] },
+    const adminUser = await User.create({
+      name, email, password, role: "admin", phone,
+      location: { type: "Point", coordinates: coords },
       emailVerified: true,
       twoFactorEnabled: true,
       securityQuestions: hashedQuestions,
     });
 
-    await sendEmail(
-      admin.email,
-      "Admin Account Created",
-      `<p>Hi <b>${admin.name}</b>, your Foodrena admin account has been created successfully.</p>`
-    );
+    await sendEmail(adminUser.email, "Admin Account Created",
+      `<p>Hi <b>${adminUser.name}</b>, your Foodrena admin account has been created.</p>`);
 
     res.status(201).json({
       message: "Admin account created successfully",
-      user: {
-        id: admin._id,
-        name: admin.name,
-        email: admin.email,
-        role: admin.role,
-      },
+      user: { id: adminUser._id, name: adminUser.name, email: adminUser.email, role: adminUser.role },
     });
   } catch (error) {
     console.error("REGISTER ADMIN ERROR:", error);
@@ -309,39 +343,25 @@ exports.switchRole = async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    // If switching to rider, check if rider profile + vehicle info exists
     if (role === "rider") {
       const rider = await Rider.findOne({ user: userId });
       if (!rider || !rider.vehicleType || !rider.vehiclePlate) {
-        return res.status(400).json({
-          message: "Vehicle info required",
-          requiresVehicleInfo: true,
-        });
+        return res.status(400).json({ message: "Vehicle info required", requiresVehicleInfo: true });
       }
     }
 
-    // If switching to vendor, check if vendor profile exists
     if (role === "vendor") {
       const vendor = await Vendor.findOne({ owner: userId });
       if (!vendor) {
         await Vendor.create({
-          owner: userId,
-          phone: user.phone,
-          location: user.location,
-          status: "pending",
-          isOpen: false,
+          owner: userId, phone: user.phone,
+          location: user.location, status: "pending", isOpen: false,
         });
       }
     }
 
-    // Add role to roles array if not already there
-    // Fallback for existing users who don't have roles array yet
-    if (!Array.isArray(user.roles)) {
-      user.roles = [user.role];
-    }
-    if (!user.roles.includes(role)) {
-      user.roles.push(role);
-    }
+    if (!Array.isArray(user.roles)) user.roles = [user.role];
+    if (!user.roles.includes(role)) user.roles.push(role);
 
     user.activeRole = role;
     user.role = role;
@@ -352,14 +372,7 @@ exports.switchRole = async (req, res) => {
     res.json({
       message: `Switched to ${role}`,
       token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role,
-        activeRole: role,
-        roles: user.roles,
-      },
+      user: { id: user._id, name: user.name, email: user.email, role, activeRole: role, roles: user.roles },
     });
   } catch (err) {
     console.error("SWITCH ROLE ERROR:", err);
