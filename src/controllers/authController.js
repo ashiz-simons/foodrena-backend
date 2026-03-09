@@ -56,21 +56,25 @@ exports.register = async (req, res) => {
       });
     }
 
-    // Verify Firebase phone token
+    // 🔧 PHONE_VERIFY_ENABLED=false: accept "bypass" token until Firebase billing enabled
+    const PHONE_VERIFY_ENABLED = process.env.PHONE_VERIFY_ENABLED === "true";
+
     if (!idToken) {
       return res.status(400).json({ message: "Phone verification required" });
     }
 
-    let firebasePhone;
-    try {
-      const decoded = await admin.auth().verifyIdToken(idToken);
-      firebasePhone = decoded.phone_number;
-      const normalize = (p) => p.replace(/\s+/g, "").replace(/^\+/, "");
-      if (!firebasePhone || normalize(firebasePhone) !== normalize(phone)) {
-        return res.status(400).json({ message: "Phone verification failed" });
+    if (PHONE_VERIFY_ENABLED && idToken !== "bypass") {
+      let firebasePhone;
+      try {
+        const decoded = await admin.auth().verifyIdToken(idToken);
+        firebasePhone = decoded.phone_number;
+        const normalize = (p) => p.replace(/\s+/g, "").replace(/^\+/, "");
+        if (!firebasePhone || normalize(firebasePhone) !== normalize(phone)) {
+          return res.status(400).json({ message: "Phone verification failed" });
+        }
+      } catch {
+        return res.status(400).json({ message: "Invalid phone verification token" });
       }
-    } catch {
-      return res.status(400).json({ message: "Invalid phone verification token" });
     }
 
     // Check phone uniqueness
