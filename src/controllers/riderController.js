@@ -124,8 +124,8 @@ exports.getMyOrders = async (req, res) => {
     if (!rider) return res.status(404).json({ message: "Rider profile missing" });
 
     const orders = await Order.find({ rider: rider._id })
-      .populate("user", "name email")
-      .populate("vendor", "name")
+      .populate("user", "name email phone")
+      .populate("vendor", "name businessName address")
       .sort({ createdAt: -1 });
 
     res.json(orders);
