@@ -99,13 +99,16 @@ exports.getDashboard = async (req, res) => {
     totalOrders,
     totalRevenue,
     isOpen: vendor.isOpen,
+    rating: vendor.rating,
+    ratingCount: vendor.ratingCount,
+    logo: vendor.logo,
   });
 };
 
 exports.getVendors = async (req, res) => {
   const vendors = await Vendor.find(
-    { isOpen: true },
-    { businessName: 1, isOpen: 1, logo: 1 }
+    {},
+    { businessName: 1, isOpen: 1, logo: 1, rating: 1, ratingCount: 1, location: 1 }
   );
   res.json(vendors);
 };
