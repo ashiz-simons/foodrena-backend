@@ -6,7 +6,7 @@ const { refundTransaction } = require('../services/payments/paystack');
 const Earning = require('../models/Earning');
 const Wallet = require('../models/Wallet');
 const finalizeOrderSettlement = require("../services/finalizeOrderSettlement");
-const { notifyCustomer } = require('../utils/notifyHelpers'); // ✅
+const { notifyCustomer } = require('../utils/notifyHelpers');
 const { calculateDeliveryFee } = require('../utils/deliveryFee');
 
 async function safeFinalizeSettlement(orderId) {
@@ -31,7 +31,6 @@ const ALLOWED_TRANSITIONS = {
   on_the_way: ['delivered'],
 };
 
-// Push notification messages per status change
 const STATUS_MESSAGES = {
   accepted:         { title: '✅ Order Accepted!',        body: 'Your order has been accepted by the vendor and is being prepared.' },
   preparing:        { title: '👨‍🍳 Order Being Prepared',  body: 'The vendor is now preparing your order.' },
@@ -130,7 +129,6 @@ async function expireIfVendorLate(order) {
     await order.save();
     await refundOrderIfNeeded(order, 'Vendor did not accept in time');
 
-    // ✅ Push notify customer — vendor timed out
     await notifyCustomer(order.user, {
       title: '❌ Order Cancelled',
       body: 'The vendor did not accept your order in time. A refund has been initiated.',
@@ -151,8 +149,68 @@ async function expireIfVendorLate(order) {
 exports.createOrder = async (req, res) => {
   try {
     const userId = req.user._id;
-    const { vendorId, items, deliveryAddress, deliveryLocation } = req.body;
+    const {
+      type,
+      vendorId,
+      items,
+      deliveryAddress,
+      deliveryLocation,
+      packageDetails,
+      pickupLocation,
+      deliveryFee: clientDeliveryFee,
+      total: clientTotal,
+      distanceKm,
+    } = req.body;
 
+    const orderType = type || 'food';
+
+    // ── PACKAGE ORDER ──────────────────────────────────────────────────────
+    if (orderType === 'package') {
+      if (!packageDetails) {
+        return res.status(400).json({ message: 'Package details required' });
+      }
+
+      const order = await Order.create({
+        user: userId,
+        vendor: null,
+        type: 'package',
+        items: [],
+        subtotal: 0,
+        deliveryFee: clientDeliveryFee || 0,
+        total: clientTotal || clientDeliveryFee || 0,
+        paymentStatus: 'unpaid',
+        deliveryAddress,
+        deliveryLocation: deliveryLocation?.lat && deliveryLocation?.lng ? {
+          type: 'Point',
+          coordinates: [parseFloat(deliveryLocation.lng), parseFloat(deliveryLocation.lat)],
+        } : undefined,
+        pickupLocation: pickupLocation || undefined,
+        packageDetails,
+        distanceKm: distanceKm || 0,
+        status: 'pending',
+        assignmentAttempts: 0,
+      });
+
+      await publish('order.created', {
+        orderId: order._id,
+        userId,
+        total: order.total,
+        status: order.status,
+        type: 'package',
+      });
+
+      const { assignRiderToOrder } = require('../services/riderMatching');
+      assignRiderToOrder(order._id).catch(err =>
+        console.error('Rider matching failed for package order:', err.message)
+      );
+
+      return res.status(201).json({
+        message: 'Package order created',
+        order: withExpiry(order),
+      });
+    }
+
+    // ── FOOD ORDER ─────────────────────────────────────────────────────────
     if (!items || !items.length) {
       return res.status(400).json({ message: 'Order items required' });
     }
@@ -176,16 +234,12 @@ exports.createOrder = async (req, res) => {
       return res.status(400).json({ message: 'Vendor unavailable' });
     }
 
-    if (
-      !vendor.location ||
-      !vendor.location.coordinates ||
-      vendor.location.coordinates.length !== 2
-    ) {
-      return res.status(400).json({ message: "Vendor missing location" });
+    if (!vendor.location || !vendor.location.coordinates || vendor.location.coordinates.length !== 2) {
+      return res.status(400).json({ message: 'Vendor missing location' });
     }
 
     if (!vendor.onboardingCompleted) {
-      return res.status(400).json({ message: "Vendor onboarding incomplete" });
+      return res.status(400).json({ message: 'Vendor onboarding incomplete' });
     }
 
     let subtotal = 0;
@@ -210,8 +264,7 @@ exports.createOrder = async (req, res) => {
 
     const [vendorLng, vendorLat] = vendor.location.coordinates;
 
-    // Calculate delivery fee based on distance
-    let deliveryFee = 500; // fallback if no location provided
+    let deliveryFee = 500;
     let customerLat = null;
     let customerLng = null;
 
@@ -238,7 +291,7 @@ exports.createOrder = async (req, res) => {
       pickupLocation: {
         lat: vendorLat,
         lng: vendorLng,
-        address: vendor.address?.street || "",
+        address: vendor.address?.street || '',
       },
       zone: vendor.zone,
       status: 'pending',
@@ -382,13 +435,11 @@ exports.updateOrderStatus = async (req, res) => {
     await order.save();
     await publish('order.status.updated', { orderId: order._id, status });
 
-    // Socket notify customer in real time
-    global.io?.to(`order_${order._id}`).emit("order_status_update", {
+    global.io?.to(`order_${order._id}`).emit('order_status_update', {
       orderId: order._id,
       status,
     });
 
-    // ✅ Push notify customer for every status change
     const msg = STATUS_MESSAGES[status];
     if (msg) {
       await notifyCustomer(order.user, {

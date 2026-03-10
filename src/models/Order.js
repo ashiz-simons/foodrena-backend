@@ -83,6 +83,17 @@ const OrderSchema = new mongoose.Schema(
       default: 'pending',
     },
 
+    packageDetails: {
+      description: String,
+      size: String,           // small | medium | large | xl
+      sizeLabel: String,
+      weight: Number,
+      transportMode: String,  // motorcycle | car | van
+      transportLabel: String,
+      recipientName: String,
+      recipientPhone: String,
+    },
+
     acceptedAt: Date,
     assignedAt: Date,
     pickedUpAt: Date,
