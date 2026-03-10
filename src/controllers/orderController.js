@@ -325,7 +325,8 @@ exports.createOrder = async (req, res) => {
  */
 exports.getMyOrders = async (req, res) => {
   const orders = await Order.find({ user: req.user._id })
-    .populate('vendor', 'name')
+    .populate('vendor', 'businessName name rating ratingCount')
+    .populate({ path: 'rider', populate: { path: 'user', select: 'name phone' } })
     .sort('-createdAt');
 
   for (const order of orders) {

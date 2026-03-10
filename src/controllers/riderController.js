@@ -4,7 +4,7 @@ const RiderWallet = require("../models/RiderWallet");
 const RiderEarning = require("../models/RiderEarning");
 const RiderTransaction = require("../models/RiderTransaction");
 const cloudinary = require("../config/cloudinary");
-const { notifyCustomer } = require("../utils/notifyHelpers"); // ✅
+const { notifyCustomer } = require("../utils/notifyHelpers");
 
 exports.createRider = async (req, res) => {
   try {
@@ -54,22 +54,14 @@ exports.updateAvailability = async (req, res) => {
 exports.updateLocation = async (req, res) => {
   try {
     const { lat, lng } = req.body;
-
-    if (lat === undefined || lng === undefined) {
+    if (lat === undefined || lng === undefined)
       return res.status(400).json({ message: "Lat & Lng required" });
-    }
 
     const rider = req.rider;
-
-    if (!rider.isAvailable) {
+    if (!rider.isAvailable)
       return res.status(403).json({ message: "Inactive rider cannot update location" });
-    }
 
-    // ✅ Save as proper GeoJSON so $nearSphere queries work
-    rider.currentLocation = {
-      type: "Point",
-      coordinates: [lng, lat], // GeoJSON order: [lng, lat]
-    };
+    rider.currentLocation = { type: "Point", coordinates: [lng, lat] };
     rider.lastActiveAt = new Date();
     await rider.save();
 
@@ -93,25 +85,20 @@ exports.assignRider = async (req, res) => {
     const { riderId } = req.body;
     const order = await Order.findById(req.params.orderId);
     if (!order) return res.status(404).json({ message: "Order not found" });
-
-    if (['delivered', 'cancelled'].includes(order.status)) {
+    if (["delivered", "cancelled"].includes(order.status))
       return res.status(400).json({ message: "Order is locked" });
-    }
 
     const rider = await Rider.findById(riderId);
-    if (!rider || !rider.isAvailable) {
+    if (!rider || !rider.isAvailable)
       return res.status(400).json({ message: "Rider unavailable" });
-    }
 
     order.rider = rider._id;
     order.status = "rider_assigned";
     await order.save();
-
     await Rider.findByIdAndUpdate(riderId, { isAvailable: false });
 
     global.io?.to(`rider_${rider._id}`).emit("new_order", order);
     global.io?.to(`order_${order._id}`).emit("order_status_update", order);
-
     res.json({ message: "Rider assigned", order });
   } catch (err) {
     res.status(500).json({ message: "Failed to assign rider" });
@@ -125,7 +112,7 @@ exports.getMyOrders = async (req, res) => {
 
     const orders = await Order.find({ rider: rider._id })
       .populate("user", "name email phone")
-      .populate("vendor", "name businessName address")
+      .populate("vendor", "businessName name rating ratingCount address")
       .sort({ createdAt: -1 });
 
     res.json(orders);
@@ -139,20 +126,15 @@ exports.acceptDelivery = async (req, res) => {
   try {
     const order = await Order.findById(req.params.orderId);
     if (!order) return res.status(404).json({ message: "Order not found" });
-
-    if (!order.rider || order.rider.toString() !== req.rider._id.toString()) {
+    if (!order.rider || order.rider.toString() !== req.rider._id.toString())
       return res.status(403).json({ message: "Not assigned to this order" });
-    }
-
-    if (order.status !== "rider_assigned") {
+    if (order.status !== "rider_assigned")
       return res.status(400).json({ message: "Order not in assignable state" });
-    }
 
     order.status = "arrived_at_pickup";
     await order.save();
-
     global.io?.to(`order_${order._id}`).emit("order_status_update", {
-      orderId: order._id, status: order.status
+      orderId: order._id, status: order.status,
     });
     res.json({ message: "Delivery accepted", order });
   } catch {
@@ -164,20 +146,15 @@ exports.markArrivedPickup = async (req, res) => {
   try {
     const order = await Order.findById(req.params.orderId);
     if (!order) return res.status(404).json({ message: "Order not found" });
-
-    if (order.rider?.toString() !== req.rider._id.toString()) {
+    if (order.rider?.toString() !== req.rider._id.toString())
       return res.status(403).json({ message: "Unauthorized" });
-    }
-
-    if (order.status !== "arrived_at_pickup") {
+    if (order.status !== "arrived_at_pickup")
       return res.status(400).json({ message: "Invalid state" });
-    }
 
     order.status = "picked_up";
     await order.save();
-
     global.io?.to(`order_${order._id}`).emit("order_status_update", {
-      orderId: order._id, status: order.status
+      orderId: order._id, status: order.status,
     });
     res.json({ message: "Pickup confirmed", order });
   } catch {
@@ -189,20 +166,15 @@ exports.startTrip = async (req, res) => {
   try {
     const order = await Order.findById(req.params.orderId);
     if (!order) return res.status(404).json({ message: "Order not found" });
-
-    if (order.rider?.toString() !== req.rider._id.toString()) {
+    if (order.rider?.toString() !== req.rider._id.toString())
       return res.status(403).json({ message: "Unauthorized" });
-    }
-
-    if (order.status !== "picked_up") {
+    if (order.status !== "picked_up")
       return res.status(400).json({ message: "Invalid order state" });
-    }
 
     order.status = "on_the_way";
     await order.save();
-
     global.io?.to(`order_${order._id}`).emit("order_status_update", {
-      orderId: order._id, status: order.status
+      orderId: order._id, status: order.status,
     });
     res.json({ message: "Trip started", order });
   } catch {
@@ -214,14 +186,10 @@ exports.completeDelivery = async (req, res) => {
   try {
     const order = await Order.findById(req.params.orderId);
     if (!order) return res.status(404).json({ message: "Order not found" });
-
-    if (order.rider?.toString() !== req.rider._id.toString()) {
+    if (order.rider?.toString() !== req.rider._id.toString())
       return res.status(403).json({ message: "Unauthorized" });
-    }
-
-    if (order.status !== "on_the_way") {
+    if (order.status !== "on_the_way")
       return res.status(400).json({ message: "Delivery not active" });
-    }
 
     // Atomic lock — prevents double payout
     const lockedOrder = await Order.findOneAndUpdate(
@@ -229,10 +197,8 @@ exports.completeDelivery = async (req, res) => {
       { $set: { riderPaid: true, status: "delivered", completedAt: new Date() } },
       { new: true }
     );
-
-    if (!lockedOrder) {
+    if (!lockedOrder)
       return res.status(400).json({ message: "Order already completed or paid" });
-    }
 
     const riderId = order.rider;
     const DELIVERY_PAYOUT = order.deliveryFee || 500;
@@ -243,7 +209,6 @@ exports.completeDelivery = async (req, res) => {
     const payoutExists = await RiderEarning.exists({ order: order._id });
     if (!payoutExists) {
       const before = wallet.pendingBalance;
-
       const earning = await RiderEarning.create({
         rider: riderId,
         order: order._id,
@@ -251,10 +216,8 @@ exports.completeDelivery = async (req, res) => {
         status: "pending",
         availableAt: new Date(Date.now() + 12 * 60 * 60 * 1000),
       });
-
       wallet.pendingBalance += DELIVERY_PAYOUT;
       await wallet.save();
-
       await RiderTransaction.create({
         rider: riderId,
         type: "earning",
@@ -265,12 +228,12 @@ exports.completeDelivery = async (req, res) => {
       });
     }
 
-    // ✅ Free up the rider for new orders
+    // Free up the rider
     await Rider.findByIdAndUpdate(riderId, {
       isAvailable: true,
       lastActiveAt: new Date(),
+      $inc: { totalDeliveries: 1 },
     });
-    console.log(`✅ Rider ${riderId} freed up after delivery`);
 
     // Socket notify
     global.io?.to(`order_${order._id}`).emit("order_status_update", {
@@ -278,10 +241,13 @@ exports.completeDelivery = async (req, res) => {
       status: "delivered",
     });
 
-    // ✅ Push notify customer — order delivered
+    // Push notify customer — prompt to rate
+    const isPackage = order.type === "package";
     await notifyCustomer(order.user, {
-      title: "✅ Order Delivered!",
-      body: "Your order has been delivered. Enjoy your meal! 🍽️",
+      title: isPackage ? "📦 Package Delivered!" : "✅ Order Delivered!",
+      body: isPackage
+        ? "Your package has been delivered. How was the rider? ⭐"
+        : "Your order has been delivered. Rate your experience! ⭐",
       orderId: order._id,
     });
 
@@ -295,12 +261,9 @@ exports.rejectDelivery = async (req, res) => {
   try {
     const order = await Order.findById(req.params.orderId);
     if (!order) return res.status(404).json({ message: "Order not found" });
-
-    if (!order.rider || order.rider.toString() !== req.rider._id.toString()) {
+    if (!order.rider || order.rider.toString() !== req.rider._id.toString())
       return res.status(403).json({ message: "Not assigned" });
-    }
 
-    // ✅ Free up the rider when they reject
     await Rider.findByIdAndUpdate(order.rider, {
       isAvailable: true,
       lastActiveAt: new Date(),
@@ -313,7 +276,6 @@ exports.rejectDelivery = async (req, res) => {
 
     const { assignRiderToOrder } = require("../services/riderMatching");
     await assignRiderToOrder(order._id);
-
     res.json({ message: "Order reassigned" });
   } catch {
     res.status(500).json({ message: "Failed to reject delivery" });
@@ -323,9 +285,7 @@ exports.rejectDelivery = async (req, res) => {
 exports.updateRiderStatus = async (req, res) => {
   try {
     const rider = await Rider.findByIdAndUpdate(
-      req.params.id,
-      { isActive: req.body.isActive },
-      { new: true }
+      req.params.id, { isActive: req.body.isActive }, { new: true }
     );
     if (!rider) return res.status(404).json({ message: "Rider not found" });
     res.json(rider);
@@ -340,7 +300,6 @@ exports.getRiderDashboard = async (req, res) => {
     if (!rider) return res.status(404).json({ message: "Rider profile missing" });
 
     const orders = await Order.find({ rider: rider._id }).sort({ createdAt: -1 });
-
     const earningsAgg = await RiderEarning.aggregate([
       { $match: { rider: rider._id } },
       { $group: { _id: null, total: { $sum: "$amount" } } },
@@ -363,17 +322,13 @@ exports.updateProfileImage = async (req, res) => {
   try {
     const rider = await Rider.findOne({ user: req.user.id });
     if (!rider) return res.status(404).json({ message: "Rider not found" });
-
     const { imageUrl, publicId } = req.body;
-    if (!imageUrl || !publicId) return res.status(400).json({ message: "Image data required" });
-
-    if (rider.profileImage?.publicId) {
+    if (!imageUrl || !publicId)
+      return res.status(400).json({ message: "Image data required" });
+    if (rider.profileImage?.publicId)
       await cloudinary.uploader.destroy(rider.profileImage.publicId);
-    }
-
     rider.profileImage = { url: imageUrl, publicId };
     await rider.save();
-
     res.json({ message: "Profile image updated", profileImage: rider.profileImage });
   } catch (err) {
     console.error(err);
@@ -385,24 +340,17 @@ exports.updateVehicle = async (req, res) => {
   try {
     const { vehicleType, vehiclePlate } = req.body;
     const userId = req.user._id;
-
     let rider = await Rider.findOne({ user: userId });
-
     if (!rider) {
       rider = await Rider.create({
-        user: userId,
-        vehicleType,
-        vehiclePlate,
-        isAvailable: false,
-        isActive: true,
-        lastActiveAt: new Date(),
+        user: userId, vehicleType, vehiclePlate,
+        isAvailable: false, isActive: true, lastActiveAt: new Date(),
       });
     } else {
       rider.vehicleType = vehicleType;
       rider.vehiclePlate = vehiclePlate;
       await rider.save();
     }
-
     res.json({ message: "Vehicle info saved", rider });
   } catch (err) {
     console.error("UPDATE VEHICLE ERROR:", err);
