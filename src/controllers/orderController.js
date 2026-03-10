@@ -187,7 +187,7 @@ exports.createOrder = async (req, res) => {
         pickupLocation: pickupLocation || undefined,
         packageDetails,
         distanceKm: distanceKm || 0,
-        status: 'pending',
+        status: 'searching_rider',
         assignmentAttempts: 0,
       });
 
@@ -199,6 +199,7 @@ exports.createOrder = async (req, res) => {
         type: 'package',
       });
 
+      // Package orders go straight to rider matching — no vendor step
       const { assignRiderToOrder } = require('../services/riderMatching');
       assignRiderToOrder(order._id).catch(err =>
         console.error('Rider matching failed for package order:', err.message)

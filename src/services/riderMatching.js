@@ -1,6 +1,6 @@
 const Rider = require("../models/Rider");
 const Order = require("../models/Order");
-const { notifyRider, notifyCustomer } = require("../utils/notifyHelpers"); // ✅
+const { notifyRider, notifyCustomer } = require("../utils/notifyHelpers");
 
 const MAX_ASSIGNMENT_ATTEMPTS = 5;
 const RESPONSE_TIMEOUT_MS = 30 * 1000;
@@ -35,27 +35,45 @@ function sortByDistance(riders, pickupLat, pickupLng) {
     .map(r => r.rider);
 }
 
+/**
+ * Extract pickup coordinates from order.
+ * Handles both formats:
+ *   - { lat, lng }              ← food orders (vendor location)
+ *   - { coordinates: [lng, lat] } ← GeoJSON
+ * For package orders, falls back to pickupLocation directly.
+ */
 function getPickupCoords(order) {
   const loc = order.pickupLocation;
-  if (!loc) return null;
+  if (!loc) {
+    // Package orders: try deliveryLocation as last resort (shouldn't happen)
+    console.error(`❌ Order ${order._id} (${order.type}) has no pickupLocation`);
+    return null;
+  }
+
+  // Format 1: { lat, lng } — food orders and package orders from Flutter
+  if (loc.lat !== undefined && loc.lng !== undefined) {
+    const lat = parseFloat(loc.lat);
+    const lng = parseFloat(loc.lng);
+    if (!isNaN(lat) && !isNaN(lng)) return { lat, lng };
+  }
+
+  // Format 2: GeoJSON { coordinates: [lng, lat] }
   if (Array.isArray(loc.coordinates) && loc.coordinates.length === 2) {
     return { lat: loc.coordinates[1], lng: loc.coordinates[0] };
   }
-  if (loc.lat !== undefined && loc.lng !== undefined) {
-    return { lat: loc.lat, lng: loc.lng };
-  }
+
+  console.error(`❌ Could not parse pickupLocation for order ${order._id}:`, JSON.stringify(loc));
   return null;
 }
 
 async function findEligibleRiders(order) {
   const pickup = getPickupCoords(order);
-  if (!pickup) {
-    console.error(`❌ Cannot read pickupLocation for order ${order._id}`);
-    return [];
-  }
+  if (!pickup) return [];
 
   const { lat, lng } = pickup;
   const baseQuery = { isAvailable: true, isActive: true };
+
+  console.log(`🔍 Searching riders near [${lat}, ${lng}] for order ${order._id} (type: ${order.type || 'food'})`);
 
   try {
     const nearbyRiders = await Rider.find({
@@ -63,7 +81,7 @@ async function findEligibleRiders(order) {
       currentLocation: {
         $nearSphere: {
           $geometry: { type: "Point", coordinates: [lng, lat] },
-          $maxDistance: 10000,
+          $maxDistance: 10000, // 10km
         },
       },
     });
@@ -80,7 +98,7 @@ async function findEligibleRiders(order) {
       currentLocation: {
         $nearSphere: {
           $geometry: { type: "Point", coordinates: [lng, lat] },
-          $maxDistance: 50000,
+          $maxDistance: 50000, // 50km
         },
       },
     });
@@ -90,10 +108,10 @@ async function findEligibleRiders(order) {
       return widerRiders;
     }
   } catch (geoErr) {
-    console.warn("⚠️ Geo query failed, using manual sort:", geoErr.message);
+    console.warn("⚠️ Geo query failed, using manual distance sort:", geoErr.message);
   }
 
-  console.warn(`🌍 No nearby riders — using all available riders`);
+  console.warn(`🌍 No nearby riders — falling back to all available riders`);
   const allRiders = await Rider.find(baseQuery);
   return sortByDistance(allRiders, lat, lng);
 }
@@ -110,22 +128,25 @@ async function tryAssignRider(order, rider) {
 
   if (!updated) return false;
 
-  console.log(`📡 Notifying rider ${rider._id} of order ${order._id}`);
+  console.log(`📡 Notifying rider ${rider._id} of order ${order._id} (type: ${order.type || 'food'})`);
 
-  // Socket notification (real-time if app is open)
+  // Socket notification
   global.io?.to(`rider_${rider._id}`).emit("new_order", {
     orderId: updated._id,
+    type: updated.type || "food",
     pickupLocation: updated.pickupLocation,
-    dropoffLocation: updated.dropoffLocation,
+    deliveryAddress: updated.deliveryAddress,
     items: updated.items,
+    packageDetails: updated.packageDetails,
     total: updated.total,
     deliveryFee: updated.deliveryFee,
   });
 
-  // ✅ Push notification (works even if app is closed)
+  // Push notification
+  const isPackage = (updated.type || "food") === "package";
   await notifyRider(rider._id, {
-    title: "🛵 New Delivery Request!",
-    body: `New order to deliver. ₦${updated.deliveryFee} delivery fee. Tap to view.`,
+    title: isPackage ? "📦 New Package Delivery!" : "🛵 New Delivery Request!",
+    body: `₦${updated.deliveryFee} delivery fee. Tap to view.`,
     orderId: updated._id,
   });
 
@@ -136,18 +157,16 @@ async function tryAssignRider(order, rider) {
         if (!fresh) return resolve(false);
         if (fresh.status !== "rider_assigned") return resolve(true);
 
-        console.log(`⏱ Rider ${rider._id} timed out`);
+        console.log(`⏱ Rider ${rider._id} timed out on order ${order._id}`);
         await Order.findOneAndUpdate(
           { _id: order._id, status: "rider_assigned", rider: rider._id },
           { $set: { rider: null, status: "searching_rider" } }
         );
 
-        // ✅ Free up the rider when they time out
         await Rider.findByIdAndUpdate(rider._id, { isAvailable: true });
-
         resolve(false);
       } catch (err) {
-        console.error("tryAssignRider error:", err.message);
+        console.error("tryAssignRider timeout error:", err.message);
         resolve(false);
       }
     }, RESPONSE_TIMEOUT_MS);
@@ -174,14 +193,12 @@ async function cancelWithRefund(order, reason) {
       }
     }
 
-    // Socket notify
     global.io?.to(`order_${order._id}`).emit("order_status_update", {
       orderId: order._id,
       status: "cancelled",
       reason,
     });
 
-    // ✅ Push notify customer — order cancelled after no rider found
     await notifyCustomer(order.user, {
       title: "❌ Order Cancelled",
       body: "We couldn't find a rider for your order. A refund has been initiated.",
@@ -206,13 +223,20 @@ exports.assignRiderToOrder = async (orderId, searchStartedAt) => {
       return null;
     }
 
-    if (!["searching_rider", "rider_assigned"].includes(order.status)) {
-      console.log(`assignRiderToOrder: order ${orderId} not searchable (${order.status})`);
+    // Accept both searching_rider (normal flow) and pending (legacy)
+    if (!["searching_rider", "pending"].includes(order.status)) {
+      console.log(`assignRiderToOrder: order ${orderId} not searchable — status: ${order.status}`);
       return null;
     }
 
+    // Ensure we're in searching_rider before proceeding
+    if (order.status === "pending") {
+      await Order.findByIdAndUpdate(orderId, { $set: { status: "searching_rider" } });
+      order.status = "searching_rider";
+    }
+
     if (elapsed >= MAX_SEARCH_DURATION_MS) {
-      console.warn(`⏰ Order ${orderId} — no rider found after 30 minutes, refunding`);
+      console.warn(`⏰ Order ${orderId} — no rider found after 30 minutes`);
       await cancelWithRefund(order, "No riders available after 30 minutes");
       return null;
     }
