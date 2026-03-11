@@ -10,8 +10,8 @@ const RiderSchema = new mongoose.Schema(
     isAvailable: { type: Boolean, default: false },
     totalDeliveries: { type: Number, default: 0 },
     currentLocation: {
-      type: { type: String, enum: ["Point"], default: "Point" },
-      coordinates: { type: [Number], default: undefined },
+      type: { type: String, enum: ["Point"] }, // ← removed default: "Point"
+      coordinates: { type: [Number] },         // ← removed default: undefined
     },
     rating: { type: Number, default: 0 },
     ratingCount: { type: Number, default: 0 },
@@ -21,5 +21,7 @@ const RiderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// sparse: true means the index ignores documents where currentLocation is null/missing
 RiderSchema.index({ currentLocation: "2dsphere" }, { sparse: true });
+
 module.exports = mongoose.model("Rider", RiderSchema);
