@@ -239,7 +239,12 @@ exports.getMyVendorProfile = async (req, res) => {
 
 exports.completeOnboarding = async (req, res) => {
   try {
-    const { businessName, street, city, state, country, bankName, accountNumber, accountName } = req.body;
+    const {
+      businessName,
+      street, city, state, country,
+      lat, lng,              // ← new: from Places Autocomplete
+      bankName, accountNumber, accountName,
+    } = req.body;
 
     if (!businessName || !street || !city || !bankName || !accountNumber) {
       return res.status(400).json({ message: "All fields required" });
@@ -253,6 +258,14 @@ exports.completeOnboarding = async (req, res) => {
     vendor.bank = { bankName, accountNumber, accountName };
     vendor.status = "review";
     vendor.onboardingCompleted = true;
+
+    // Save coordinates if provided (from Places Autocomplete)
+    if (lat != null && lng != null) {
+      vendor.location = {
+        type: "Point",
+        coordinates: [parseFloat(lng), parseFloat(lat)], // GeoJSON: [lng, lat]
+      };
+    }
 
     await vendor.save();
 
