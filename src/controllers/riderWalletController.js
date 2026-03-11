@@ -20,19 +20,11 @@ exports.getMyWallet = async (req, res) => {
     }
 
     // Also return bank details from Rider profile
-    const rider = await Rider.findOne({ user: userId }).select(
-      "bankName accountNumber accountName"
-    );
+    const rider = await Rider.findOne({ user: userId }).select("bank");
 
     res.json({
       ...wallet.toObject(),
-      bank: rider
-        ? {
-            bankName: rider.bankName,
-            accountNumber: rider.accountNumber,
-            accountName: rider.accountName,
-          }
-        : null,
+      bank: rider?.bank ?? null, // { bankName, accountNumber, accountName }
     });
   } catch (err) {
     res.status(500).json({ message: "Failed to load wallet", error: err.message });
