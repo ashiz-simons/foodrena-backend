@@ -336,3 +336,44 @@ exports.getPopularDishes = async (req, res) => {
     res.status(500).json({ message: "Failed to fetch popular dishes" });
   }
 };
+
+exports.searchVendorsAndDishes = async (req, res) => {
+  try {
+    const q = (req.query.q || "").trim();
+    if (!q) return res.json({ vendors: [], dishes: [] });
+
+    const regex = new RegExp(q, "i");
+
+    // Search vendors by business name
+    const vendorMatches = await Vendor.find(
+      { businessName: regex },
+      { businessName: 1, isOpen: 1, logo: 1, rating: 1, ratingCount: 1, location: 1 }
+    ).limit(20);
+
+    // Search menu items by name across all vendors
+    const dishMatches = await Vendor.aggregate([
+      { $unwind: "$menuItems" },
+      { $match: { "menuItems.name": regex, "menuItems.available": true } },
+      {
+        $project: {
+          _id: 0,
+          vendorId: "$_id",
+          vendorName: "$businessName",
+          vendorIsOpen: "$isOpen",
+          vendorLogo: "$logo",
+          dishId: "$menuItems._id",
+          dishName: "$menuItems.name",
+          dishPrice: "$menuItems.price",
+          dishDescription: "$menuItems.description",
+          dishImage: "$menuItems.image",
+        },
+      },
+      { $limit: 30 },
+    ]);
+
+    res.json({ vendors: vendorMatches, dishes: dishMatches });
+  } catch (err) {
+    console.error("Search error:", err);
+    res.status(500).json({ message: "Search failed" });
+  }
+};
