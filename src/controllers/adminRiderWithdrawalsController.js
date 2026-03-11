@@ -5,61 +5,76 @@ const RiderWallet = require("../models/RiderWallet");
  * Admin gets all rider withdrawals
  */
 exports.getWithdrawals = async (req, res) => {
-  const withdrawals = await RiderWithdrawal.find()
-    .populate("rider", "name email")
-    .sort({ createdAt: -1 });
+  try {
+    const { status } = req.query; // ?status=pending
+    const filter = status ? { status } : {};
 
-  res.json(withdrawals);
+    const withdrawals = await RiderWithdrawal.find(filter)
+      .populate("rider", "name email phone")
+      .sort({ createdAt: -1 });
+
+    res.json(withdrawals);
+  } catch (err) {
+    res.status(500).json({ message: "Server error", error: err.message });
+  }
 };
 
 /**
- * Admin marks withdrawal paid
+ * Admin marks withdrawal paid — releases pending funds permanently
  */
 exports.markPaid = async (req, res) => {
-  const withdrawal = await RiderWithdrawal.findById(req.params.id);
+  try {
+    const withdrawal = await RiderWithdrawal.findById(req.params.id);
 
-  if (!withdrawal) {
-    return res.status(404).json({ message: "Not found" });
+    if (!withdrawal)
+      return res.status(404).json({ message: "Not found" });
+
+    if (withdrawal.status !== "pending")
+      return res.status(400).json({ message: `Already ${withdrawal.status}` });
+
+    const wallet = await RiderWallet.findById(withdrawal.wallet);
+    if (wallet) {
+      wallet.pendingBalance = Math.max(0, wallet.pendingBalance - withdrawal.amount);
+      await wallet.save();
+    }
+
+    withdrawal.status = "paid";
+    withdrawal.paidAt = new Date();
+    withdrawal.reference = `RIDER_PAYOUT_${Date.now()}`;
+    await withdrawal.save();
+
+    res.json({ message: "Withdrawal marked as paid", withdrawal });
+  } catch (err) {
+    res.status(500).json({ message: "Server error", error: err.message });
   }
-
-  if (withdrawal.status === "paid") {
-    return res.status(400).json({ message: "Already paid" });
-  }
-
-  withdrawal.status = "paid";
-  withdrawal.paidAt = new Date();
-  withdrawal.reference = `RIDER_PAYOUT_${Date.now()}`;
-
-  await withdrawal.save();
-
-  res.json({ message: "Withdrawal paid", withdrawal });
 };
 
 /**
- * Admin marks failed → refund wallet
+ * Admin marks failed → refund pending back to available balance
  */
 exports.markFailed = async (req, res) => {
-  const withdrawal = await RiderWithdrawal.findById(req.params.id);
+  try {
+    const withdrawal = await RiderWithdrawal.findById(req.params.id);
 
-  if (!withdrawal) {
-    return res.status(404).json({ message: "Not found" });
+    if (!withdrawal)
+      return res.status(404).json({ message: "Not found" });
+
+    if (withdrawal.status !== "pending")
+      return res.status(400).json({ message: `Already ${withdrawal.status}` });
+
+    const wallet = await RiderWallet.findById(withdrawal.wallet);
+    if (wallet) {
+      wallet.pendingBalance = Math.max(0, wallet.pendingBalance - withdrawal.amount);
+      wallet.balance += withdrawal.amount;
+      await wallet.save();
+    }
+
+    withdrawal.status = "failed";
+    withdrawal.failureReason = req.body.reason || "Transfer failed";
+    await withdrawal.save();
+
+    res.json({ message: "Withdrawal failed & funds refunded", withdrawal });
+  } catch (err) {
+    res.status(500).json({ message: "Server error", error: err.message });
   }
-
-  if (withdrawal.status === "paid") {
-    return res.status(400).json({ message: "Already paid" });
-  }
-
-  withdrawal.status = "failed";
-  withdrawal.failureReason = req.body.reason || "Failed";
-
-  await withdrawal.save();
-
-  // Refund wallet
-  const wallet = await RiderWallet.findById(withdrawal.wallet);
-  if (wallet) {
-    wallet.balance += withdrawal.amount;
-    await wallet.save();
-  }
-
-  res.json({ message: "Withdrawal failed & refunded", withdrawal });
 };

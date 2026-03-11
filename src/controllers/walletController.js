@@ -1,82 +1,102 @@
 const Wallet = require('../models/Wallet');
 const Vendor = require('../models/Vendor');
 const Withdrawal = require('../models/Withdrawal');
-const { initiateTransfer } = require('../services/payments/paystack');
 
 /**
- * GET MY WALLET
+ * GET MY WALLET — includes bank details
  */
 exports.getMyWallet = async (req, res) => {
-  const vendor = await Vendor.findOne({ owner: req.user._id });
-  if (!vendor) return res.status(403).json({ message: 'Not a vendor' });
+  try {
+    const vendor = await Vendor.findOne({ owner: req.user._id });
+    if (!vendor) return res.status(403).json({ message: 'Not a vendor' });
 
-  let wallet = await Wallet.findOne({ vendor: vendor._id });
+    let wallet = await Wallet.findOne({ vendor: vendor._id });
+    if (!wallet) {
+      wallet = await Wallet.create({
+        vendor: vendor._id,
+        balance: 0,
+        pendingBalance: 0,
+        currency: 'NGN',
+      });
+    }
 
-  if (!wallet) {
-    wallet = await Wallet.create({
-      vendor: vendor._id,
-      balance: 0,
-      pendingBalance: 0,
-      currency: 'NGN'
+    res.json({
+      ...wallet.toObject(),
+      bank: vendor.bank ?? null, // { bankName, accountNumber, accountName }
     });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
   }
-
-  res.json(wallet);
 };
 
 /**
- * REQUEST WITHDRAWAL
+ * GET WITHDRAWAL HISTORY
+ */
+exports.getWithdrawals = async (req, res) => {
+  try {
+    const vendor = await Vendor.findOne({ owner: req.user._id });
+    if (!vendor) return res.status(403).json({ message: 'Not a vendor' });
+
+    const withdrawals = await Withdrawal.find({ vendor: vendor._id })
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    res.json(withdrawals);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+/**
+ * REQUEST WITHDRAWAL — creates pending request, admin approves and pays manually
  */
 exports.requestWithdrawal = async (req, res) => {
-  const { amount, recipient } = req.body;
-
-  if (!amount || amount <= 0)
-    return res.status(400).json({ message: 'Invalid amount' });
-
-  if (amount < 500)
-    return res.status(400).json({ message: 'Minimum withdrawal is ₦500' });
-
-  const vendor = await Vendor.findOne({ owner: req.user._id });
-  if (!vendor) return res.status(403).json({ message: 'Not a vendor' });
-
-  const wallet = await Wallet.findOne({ vendor: vendor._id });
-  if (!wallet || wallet.balance < amount)
-    return res.status(400).json({ message: 'Insufficient balance' });
-
-  const reference = `WD_${vendor._id}_${Date.now()}`;
-
-  // Lock funds
-  wallet.balance -= amount;
-  wallet.pendingBalance += amount;
-  await wallet.save();
-
-  const withdrawal = await Withdrawal.create({
-    vendor: vendor._id,
-    wallet: wallet._id,
-    amount,
-    reference,
-    status: 'pending'
-  });
-
   try {
-    await initiateTransfer({
-      amount,
-      recipient: recipient || vendor.paystackRecipientCode,
-      reference
-    });
+    const { amount } = req.body;
 
-    res.json({ message: 'Withdrawal initiated', withdrawal });
+    if (!amount || amount <= 0)
+      return res.status(400).json({ message: 'Invalid amount' });
 
-  } catch (err) {
-    // ✅ CORRECT ROLLBACK
-    wallet.pendingBalance -= amount;
-    wallet.balance += amount;
+    if (amount < 500)
+      return res.status(400).json({ message: 'Minimum withdrawal is ₦500' });
+
+    const vendor = await Vendor.findOne({ owner: req.user._id });
+    if (!vendor) return res.status(403).json({ message: 'Not a vendor' });
+
+    if (!vendor.bank?.accountNumber)
+      return res.status(400).json({
+        message: 'Please add your bank details before withdrawing',
+      });
+
+    let wallet = await Wallet.findOne({ vendor: vendor._id });
+    if (!wallet)
+      return res.status(404).json({ message: 'Wallet not found' });
+
+    if (wallet.balance < amount)
+      return res.status(400).json({ message: 'Insufficient balance' });
+
+    // Lock funds — move to pending, don't delete
+    wallet.balance -= amount;
+    wallet.pendingBalance += amount;
     await wallet.save();
 
-    withdrawal.status = 'failed';
-    withdrawal.failureReason = err.message;
-    await withdrawal.save();
+    const reference = `WD_${vendor._id}_${Date.now()}`;
 
-    res.status(500).json({ message: 'Transfer failed' });
+    const withdrawal = await Withdrawal.create({
+      vendor: vendor._id,
+      wallet: wallet._id,
+      amount,
+      reference,
+      status: 'pending',
+    });
+
+    res.json({
+      message: 'Withdrawal request submitted. Pending admin approval.',
+      balance: wallet.balance,
+      pendingBalance: wallet.pendingBalance,
+      withdrawal,
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
