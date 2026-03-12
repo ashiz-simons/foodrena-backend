@@ -67,6 +67,7 @@ app.use('/api/upload', uploadRoutes);
 app.use('/api/users', require('./routes/fcmTokenRoutes'));
 app.use("/api/ratings", require("./routes/ratingRoutes"));
 app.use("/api/promos", promoRoutes);
+app.use("/api/support", require("./routes/supportRoutes"));
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, time: new Date() });
