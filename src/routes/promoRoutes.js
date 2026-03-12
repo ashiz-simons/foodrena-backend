@@ -1,25 +1,34 @@
-const express  = require("express");
-const router   = express.Router();
-const ctrl     = require("../controllers/promoController");
-const { protect }        = require("../middleware/auth");
-const { protectAdmin }   = require("../middleware/protectAdmin");
-const { protectVendor }  = require("../middleware/protectVendor");
+const router = require("express").Router();
+const auth          = require("../middleware/auth");
+const protectAdmin  = require("../middleware/protectAdmin");
+const protectVendor = require("../middleware/protectVendor");
+const {
+  publicList,
+  applyPromo,
+  vendorCreate,
+  vendorList,
+  vendorDelete,
+  adminCreate,
+  adminList,
+  adminDelete,
+  adminToggle,
+} = require("../controllers/promoController");
 
-// ── Public (customer, no auth needed for banner) ───────────────────────────
-router.get("/public", ctrl.publicList);
+// ── Public (no auth — home screen banner) ─────────────────────────────────
+router.get("/public", publicList);
 
-// ── Customer: apply a code (auth required) ─────────────────────────────────
-router.post("/apply", protect, ctrl.applyPromo);
+// ── Customer: apply a code ────────────────────────────────────────────────
+router.post("/apply", auth, applyPromo);
 
-// ── Vendor ─────────────────────────────────────────────────────────────────
-router.post("/vendor",        protectVendor, ctrl.vendorCreate);
-router.get("/vendor",         protectVendor, ctrl.vendorList);
-router.delete("/vendor/:id",  protectVendor, ctrl.vendorDelete);
+// ── Vendor ────────────────────────────────────────────────────────────────
+router.post("/vendor",       protectVendor, vendorCreate);
+router.get("/vendor",        protectVendor, vendorList);
+router.delete("/vendor/:id", protectVendor, vendorDelete);
 
-// ── Admin ──────────────────────────────────────────────────────────────────
-router.post("/admin",         protectAdmin, ctrl.adminCreate);
-router.get("/admin",          protectAdmin, ctrl.adminList);
-router.delete("/admin/:id",   protectAdmin, ctrl.adminDelete);
-router.patch("/admin/:id/toggle", protectAdmin, ctrl.adminToggle);
+// ── Admin ─────────────────────────────────────────────────────────────────
+router.post("/admin",             protectAdmin, adminCreate);
+router.get("/admin",              protectAdmin, adminList);
+router.delete("/admin/:id",       protectAdmin, adminDelete);
+router.patch("/admin/:id/toggle", protectAdmin, adminToggle);
 
 module.exports = router;
