@@ -28,6 +28,7 @@ const unlockRiderEarnings = require("./jobs/unlockRiderEarnings");
 const riderTrackingSocket = require("./sockets/riderTracking");
 const uploadRoutes = require('./routes/upload');
 const startKeepAlive = require("./utils/keepAlive");
+const promoRoutes = require("./routes/promoRoutes");
 
 setInterval(unlockRiderEarnings, 5 * 60 * 1000);
 
@@ -65,6 +66,7 @@ app.use('/api/users', require('./routes/users'));
 app.use('/api/upload', uploadRoutes);
 app.use('/api/users', require('./routes/fcmTokenRoutes'));
 app.use("/api/ratings", require("./routes/ratingRoutes"));
+app.use("/api/promos", promoRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, time: new Date() });
