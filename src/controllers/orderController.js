@@ -507,3 +507,17 @@ exports.updateOrderStatus = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+
+exports.getOrderById = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id)
+      .populate('vendor', 'businessName name')
+      .populate({ path: 'rider', populate: { path: 'user', select: 'name phone' } });
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (order.user.toString() !== req.user._id.toString())
+      return res.status(403).json({ message: 'Access denied' });
+    res.json(order);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
