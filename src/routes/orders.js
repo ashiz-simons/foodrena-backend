@@ -24,6 +24,8 @@ router.get(
   orderController.getMyOrders
 );
 
+router.patch("/:id/cancel", auth, cancelOrder);
+
 // =======================
 // VENDOR
 // =======================

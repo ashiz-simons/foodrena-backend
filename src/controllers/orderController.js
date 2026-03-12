@@ -8,6 +8,7 @@ const Wallet = require('../models/Wallet');
 const finalizeOrderSettlement = require("../services/finalizeOrderSettlement");
 const { notifyCustomer } = require('../utils/notifyHelpers');
 const { calculateDeliveryFee } = require('../utils/deliveryFee');
+const { creditWallet } = require("./customerWalletController");
 
 async function safeFinalizeSettlement(orderId) {
   try {
@@ -315,6 +316,54 @@ exports.createOrder = async (req, res) => {
   } catch (err) {
     console.error('Create Order Error:', err);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.cancelOrder = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: "Order not found" });
+ 
+    // Only the customer who placed it can cancel
+    if (order.customer.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Not your order" });
+    }
+ 
+    // Only pending orders can be cancelled
+    if (order.status !== "pending") {
+      return res.status(400).json({
+        message: "Only pending orders (not yet accepted by vendor) can be cancelled",
+      });
+    }
+ 
+    order.status = "cancelled";
+    await order.save();
+ 
+    // Refund to customer wallet if order was paid
+    const wasPaid =
+      order.paymentStatus === "paid" ||
+      order.paymentMethod === "paystack" ||
+      order.paymentMethod === "card";
+ 
+    if (wasPaid) {
+      const refundAmount = order.total ?? order.totalAmount ?? 0;
+      if (refundAmount > 0) {
+        await creditWallet(
+          req.user._id,
+          refundAmount,
+          `Refund for cancelled order #${order._id.toString().slice(-8).toUpperCase()}`,
+          order._id
+        );
+      }
+    }
+ 
+    res.json({
+      message: "Order cancelled successfully",
+      refunded: wasPaid,
+      order,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 };
 

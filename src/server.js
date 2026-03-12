@@ -68,6 +68,7 @@ app.use('/api/users', require('./routes/fcmTokenRoutes'));
 app.use("/api/ratings", require("./routes/ratingRoutes"));
 app.use("/api/promos", promoRoutes);
 app.use("/api/support", require("./routes/supportRoutes"));
+app.use("/api/customer-wallet", require("./routes/customerWalletRoutes"));
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, time: new Date() });
