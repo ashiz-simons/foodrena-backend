@@ -24,7 +24,13 @@ router.get(
   orderController.getMyOrders
 );
 
-router.patch("/:id/cancel", auth, cancelOrder);
+// cancel order (pending only)
+router.patch(
+  '/:id/cancel',
+  auth,
+  allow('customer'),
+  orderController.cancelOrder
+);
 
 // =======================
 // VENDOR
@@ -44,6 +50,13 @@ router.patch(
   auth,
   allow('vendor'),
   orderController.updateOrderStatus
+);
+
+// get single order
+router.get(
+  '/:id',
+  auth,
+  orderController.getOrderById
 );
 
 module.exports = router;

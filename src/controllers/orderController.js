@@ -325,7 +325,7 @@ exports.cancelOrder = async (req, res) => {
     if (!order) return res.status(404).json({ message: "Order not found" });
  
     // Only the customer who placed it can cancel
-    if (order.customer.toString() !== req.user._id.toString()) {
+    if (order.user.toString() !== req.user._id.toString()) {
       return res.status(403).json({ message: "Not your order" });
     }
  
