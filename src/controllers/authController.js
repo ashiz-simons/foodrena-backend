@@ -108,7 +108,7 @@ exports.register = async (req, res) => {
       password,
       role: initialRole,
       phone,
-      phoneVerified: true,
+      phoneVerified: false,
       location: { type: "Point", coordinates: coords },
     });
 
